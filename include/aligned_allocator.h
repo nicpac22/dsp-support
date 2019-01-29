@@ -14,12 +14,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+// requires -D_XOPEN_SOURCE 600 or higher
+
 #ifndef _ALIGNED_ALLOCATOR_H_
 #define _ALIGNED_ALLOCATOR_H_
 
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 600
-#endif
 #include <cstdlib>
 #include <bits/functexcept.h>
 #include <stdlib.h>
@@ -33,6 +32,7 @@ class aligned_allocator_traits
     static const size_t align_bytes = sizeof(align_type);
 };
 
+// NB: sizes are BYTE alignment, not bits, i.e. align_16 is a 16-byte alignment
 typedef aligned_allocator_traits<int16_t> align_16;
 typedef aligned_allocator_traits<int32_t> align_32;
 typedef aligned_allocator_traits<int64_t> align_64;
