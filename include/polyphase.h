@@ -40,7 +40,7 @@
 //    Name   Sidelobe  Equivalent    Rolloff    Window Type 
 //           Max (dB)  Bandwidth   (dB/Octave) 
 //    NONE    -13        1.00           6       Rectangle
-//    HANN    -32        1.50          18       Hanning (cosine bell) 
+//    HANN    -32        1.50          18       Hann (cosine bell) 
 //    HAMM    -43        1.36           6       Hamming (bell on pedestal)
 //    BH61    -61        1.61           6       Blackman-Harris 3 weight  
 //    BH67    -67        1.71           6       Blackman-Harris 3 weight optimal
