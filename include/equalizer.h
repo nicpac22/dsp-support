@@ -19,7 +19,6 @@
 #ifndef EQUALIZER_H
 #define EQUALIZER_H
 
-#include <primitive.h>
 #include <vector>
 #include "constel.h"
 #include <cmath>

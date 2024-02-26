@@ -119,10 +119,6 @@
 #include "genfilter.h"
 #include "aligned_allocator.h"
 
-#ifdef HAVE_CONFIG_H
-#include "config.h" // automatically generated, contains arch specific #defines
-#endif
-
 #ifdef HAVE_SSE2
 #include <emmintrin.h> // for efficient round and trunc
 #endif

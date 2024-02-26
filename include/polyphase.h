@@ -1,5 +1,5 @@
 /* 
- * Copyright (c) 2017 Nick Xenias
+ * Copyright (c) 2022 Nick Xenias
  * 
  * This program is free software: you can redistribute it and/or modify  
  * it under the terms of the GNU Lesser General Public License as   
@@ -18,7 +18,7 @@
 //
 //  Purpose:  Generates a polyphase filter bank from an FIR input filter
 //
-//  Created:  2017/04/03
+//  Created:  2022/11/05
 // 
 //  Description:
 //    Generates a polyphase filter bank from an FIR input filter.  For various
