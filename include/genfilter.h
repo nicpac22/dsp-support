@@ -64,6 +64,7 @@
 #include <stdexcept>
 #include <algorithm> // std::transform
 #include <complex>
+#include <iostream>  // cerr
 
 using std::vector;
 using std::string;
