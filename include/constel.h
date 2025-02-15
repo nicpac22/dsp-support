@@ -380,7 +380,8 @@ namespace Constel
         (fabsf(soft.real())<QAM16_BOUND)<<2 |
         
         (soft.imag()<0)<<2 |
-        (fabsf(soft.imag())<QAM16_BOUND);
+        
+        soft.imag()<-QAM64_BOUND2|fabsf(soft.imag()-QAM64_BOUND2)<QAM64_BOUND1;
   }
 
   // Given an input buffer of complex-valued soft decisions, quantizes to the
@@ -475,7 +476,7 @@ namespace Constel
   //    bits = buffer of quantized bits, with each bit stored in the LSb of a
   //        char, must have room for 4*len elements
   inline void quantizeBits16QAM(Complex8 const * const soft, const int len,
-      char * const bits)
+      char * bits)
   {
     char idx;
     for(int i=0; i<len; ++i)
@@ -496,7 +497,7 @@ namespace Constel
   //    bits = buffer of quantized bits, with each bit stored in the LSb of a
   //        char, must have room for 6*len elements
   inline void quantizeBits64QAM(Complex8 const * const soft, const int len,
-      char * const bits)
+      char * bits)
   {
     char idx;
     for(int i=0; i<len; ++i)
