@@ -28,14 +28,31 @@ class aligned_allocator_traits
 {
   public:
     typedef alignT align_type;
-    static const size_t align_bits = (sizeof(align_type)*8);
     static const size_t align_bytes = sizeof(align_type);
+    static const size_t pad_bytes = 0;
 };
 
 // NB: sizes are BYTE alignment, not bits, i.e. align_16 is a 16-byte alignment
 typedef aligned_allocator_traits<int16_t> align_16;
 typedef aligned_allocator_traits<int32_t> align_32;
 typedef aligned_allocator_traits<int64_t> align_64;
+
+// Alignment with extra 2xalignment worth of pad bytes appended to the end,
+// allowing for over-indexing on read of up to 2 SIMD registers without
+// causing segfaults
+template<typename alignT>
+class evm_aligned_allocator_traits
+{
+  public:
+    typedef alignT align_type;
+    static const size_t align_bytes = sizeof(align_type);
+    static const size_t pad_bytes = sizeof(align_type)*2;
+};
+
+typedef evm_aligned_allocator_traits<int16_t> evm_16;
+typedef evm_aligned_allocator_traits<int32_t> evm_32;
+typedef evm_aligned_allocator_traits<int64_t> evm_64;
+typedef evm_aligned_allocator_traits<int64_t> evm_max;
 
 template<typename _Tp, typename traits = aligned_allocator_traits<int16_t> >
 class aligned_allocator
@@ -89,8 +106,8 @@ class aligned_allocator
 
       void* tmpvalue = 0;
       int ret = posix_memalign(&tmpvalue,
-                               traits::align_bits,
-                               (__n * sizeof(_Tp)));
+                               traits::align_bytes,
+                               (__n * sizeof(_Tp))+traits::pad_bytes);
       if(ret)
       {
 	      std::__throw_bad_alloc();
