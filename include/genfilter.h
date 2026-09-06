@@ -75,10 +75,8 @@ using std::complex;
 namespace GenFilter
 {
   // mathematical constants
-  const float pi_f = 3.141592654f;
-  const double pi_d = 3.141592653589793238462643e+0;
-  const float two_pi_f = 6.283185308f;
-  const double two_pi_d = 6.283185307179586476925287e+0;
+  static const double pi_d = 3.141592653589793238462643e+0;
+  static const double two_pi_d = 6.283185307179586476925287e+0;
   
   // window type enumeration
   enum WinType {UNKNOWN=-1,NONE,SRRC,HAMM,HANN,BH61,BH67,BH74,BH92};
@@ -497,7 +495,7 @@ namespace GenFilter
   // to the desired frequency with a cosine
   //    taps = impulse response length in samples
   //    cutoff = 1/2 the 3dB bandwidth of the SRRC (1/2 baudrate of signal to
-  //             be pulse shaped)
+  //        be pulse shaped)
   //    xdelta = filter sampling interval in seconds
   //    beta = SRRC rolloff factor
   //    filtOut = filter impulse response
@@ -566,7 +564,7 @@ namespace GenFilter
   // singleSided==true) or a cosine (if singleSided==false)
   //    taps = impulse response length in samples
   //    cutoff = 1/2 the 3dB bandwidth of the SRRC (1/2 baudrate of signal to
-  //             be pulse shaped)
+  //        be pulse shaped)
   //    xdelta = filter sampling interval in seconds
   //    beta = SRRC rolloff factor
   //    filtOut = filter impulse response
