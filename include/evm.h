@@ -21,15 +21,16 @@
 // Created:  2026/03/28
 //
 // Description:
-//  Implements some common efficient vector math functions using SIMD (single
-//  instruction multiple data) intrinsics.  These functions use runtime
-//  dispatch to automatically choose the most advanced instruction set based
-//  on the architecture being run on.  For example, if a function supports both
-//  an AVX and an AVX512 branch, it will take the AVX512 branch if executed on
-//  an Icelake cpu or the AVX branch if executed on a Haswell cpu, regardless
-//  of compiler optimization flags.  In some cases (unit/regression testing,
-//  etc.) it may be desireable to disable certain branches.  This can be done
-//  by specifying one or more of the following macros at compile time:
+//  Implements some common efficient vector math functions for x86 processors
+//  using SIMD (single instruction multiple data) intrinsics.  These functions
+//  use runtime dispatch to automatically choose the most advanced instruction
+//  set based on the architecture being run on.  For example, if a function
+//  supports both an AVX and an AVX512 branch, it will take the AVX512 branch
+//  if executed on an Icelake cpu or the AVX branch if executed on a Haswell
+//  cpu, regardless of compiler optimization flags.  In some cases
+//  (unit/regression testing, etc.) it may be desireable to disable certain
+//  branches.  This can be done by specifying one or more of the following
+//  macros at compile time:
 //    -DDISABLE_AVX512
 //    -DDISABLE_AVX2
 //    -DDISABLE_AVX
@@ -39,6 +40,10 @@
 //    -DDISABLE_SSE2
 //    -DDISABLE_SSE
 //    -DDISABLE_SIMD (disables all branches, uses single-element "for" loops)
+//
+//  Note that currently there are only implementations for AVX, AVX2, and AVX512
+//  branches along with a default (non-SIMD) branch, so disabling the SSE
+//  branches will not have any practical effect.
 //
 //  One of the hidden costs of SIMD instructions is loading data from memory
 //  into a SIMD register and storing it back into memory after a computation.
@@ -58,25 +63,55 @@
 //  store.  Newer x86 instructions sets have masked load/store operations which
 //  avoid this, however these are not available on older architectures.
 //
-//  To help mitigate the cost of load operations, this class offers an aligned
-//  allocator for stl vectors (aligned_allocator.h) which both aligns memory
-//  on boundaries that are a multiple of the SIMD register size and reserves
-//  additional space in the buffer equivalent to one full SIMD register.  There
-//  is also a helper function to return the number of elements per SIMD
-//  register based on data type (float, complex<float>, etc.).  Below is an
-//  example of creating a SIMD aligned vector of complex single precision
+//  To help mitigate the cost of load operations, this code base includes an
+//  aligned allocator for stl vectors (aligned_allocator.h) which both aligns
+//  memory on boundaries that are a multiple of the SIMD register size and
+//  reserves additional space in the buffer equivalent to one full SIMD
+//  register.  There is also a helper function to return the number of elements
+//  per SIMD register based on data type (float, complex<float>, etc.).  Below
+//  is an example of creating a SIMD aligned vector of complex single precision
 //  floating point elements, sized to a multiple of the SIMD register size:
 //    ALIGNED_VECTOR(complex<float> ) myvec(EVM::getSize<complex<float> >(29));
+//  Note that the EVM::getSize<complex<float> >(29) function call will return
+//  the next higher number (>=29) of 64-bit (complex float) elements that is a
+//  multiple of the SIMD register size on the target platform. 
 //
+//  For maximum speed/efficiency, the function EVM::enableFastDenormals()
+//  should be called at the start of any program using evm.h.  This will avoid
+//  large penalties when denormal (very small floating point) numbers are
+//  produced by setting them to 0.  Setting this at the start of the program
+//  will cause any threads spawned by the program to inherit the setting as
+//  well.
+//  
 //  The following mathematical operations are currently implemented:
 //
 //  Multiply/Divide:
 //    scale = multiply an input buffer by a constant scale factor
 //    mult = point-by-point vector multiply
 //    multc = point-by-point complex conjugate multiply, second input conjugated
-//    div = point-by-point vector divide
+//    div = point-by-point vector divide, true division
+//    divnr = point-by-point vector divide using a reciprocal approximation with
+//        1 Newton-Raphson stage for refinement, this is the preferred
+//        implementation for moderate buffer sizes (fit in cache) with a
+//        reasonable tradeoff between accuracy (1-2 ulp) and speed
 //    divr = point-by-point vector divide using fast reciprocal approximation
-//    divc = point-by-point complex conjugate divide, second input conjugated
+//        without Newton-Raphson refinement
+//    divc1 = point-by-point complex conjugate divide, first input conjugated,
+//        true division
+//    divc1nr = point-by-point complex conjugate divide, first input
+//        conjugated, with 1 Newton-Raphson stage for refinement, this is the
+//        preferred implementation for moderate buffer sizes (fit in cache)
+//        with a reasonable tradeoff between accuracy and speed
+//    divc1r = point-by-point complex conjugate divide, first input conjugated,
+//        using fast reciprocal approximation without Newton-Raphson refinement
+//    divc2 = point-by-point complex conjugate divide, second input conjugated,
+//        true division
+//    divc2nr = point-by-point complex conjugate divide, second input
+//        conjugated, with 1 Newton-Raphson stage for refinement, this is the
+//        preferred implementation for moderate buffer sizes (fit in cache)
+//        with a reasonable tradeoff between accuracy and speed
+//    divc2r = point-by-point complex conjugate divide, second input conjugated,
+//        using fast reciprocal approximation without Newton-Raphson refinement
 //
 //  Dot-product:
 //    dotp = dot-product of two input buffers
@@ -95,18 +130,6 @@
 //  Specialized:
 //    tune = tunes complex data with a numerically controlled oscillator (NCO)
 //    fs2Shift = Fs/2 frequency shift for complex data
-//  
-//  Note that for each method there is an "internal" fast version that starts
-//  with "_" (i.e. _mult) that avoids all bounds checking (both load and store)
-//  but requires the buffer length being operated on to be an integer multiple
-//  of the SIMD register size for a given architecture.  The getSize(<type>)
-//  method can be used to assist in computing the number of elements to
-//  operate on.
-//
-//  IMPORTANT: unless otherwise specified in the function declaration, when
-//  using the internal "_" methods, assume you must set length to
-//  getSize<complex<float> >(len) if all arguments are complex or
-//  getSize<float>(len) if ANY argument is real.
 //
 //==============================================================================
 #ifndef EFFICIENT_VECTOR_MATH_H
@@ -183,7 +206,6 @@ alignas(32) static const int32_t masks[8][8] = {
   {-1,-1,-1,-1,-1,-1,-1, 0},   // remainder 7
 };
 
-
 using std::complex;
 
 namespace EVM
@@ -207,6 +229,22 @@ namespace EVM
   // Returns the highest optimization level as a string
   //    EVM::getOptLevel = string representation of highest optimization level
   std::string getOptLevel();
+
+  // Enables fast denormals (floating point numbers very close to 0) by
+  // flushing produced denormals to 0 and interpreting them as 0.  This can
+  // result in large savings (on the order of 80 cycles) but must be set before
+  // any threads are spawned in order for threads to inherit the setting.  This
+  // method should be called at the start of any program using evm.h unless
+  // expressly undesired by other functionality in the program.  This same
+  // functionality will usually be enabled automatically with -ffast-math but
+  // best not to rely on that.
+  void enableFastDenormals()
+  {
+    #if defined(__SSE__) || defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+    #endif
+  };
 
   //==============//
   // Vector Scale //
@@ -292,7 +330,7 @@ namespace EVM
   // Vector Divide //
   //===============//
   // Point by point multiply of two input buffers.  The output buffer may be
-  // the same as one of the input buffers.
+  // the same as one of the input buffers.  This version uses a true divide.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -305,19 +343,126 @@ namespace EVM
       const int len, complex<float> * const out);
   void div(complex<float> const * const in1, float const * const in2,
       const int len, complex<float> * const out);
-    
+  
+  // Point by point multiply of two input buffers.  The output buffer may be
+  // the same as one of the input buffers.  This version uses a reciprocal
+  // approximation with 1 Newton-Raphson stage for refinement to achieve an
+  // answer comparable to true division for single precision float elements but
+  // with increased efficiency.
+  //    in1 = first input buffer for divide (dividend)
+  //    in2 = second input buffer for divide (divisor)
+  //    len = number of elements to divide
+  //    out = output buffer to recieve result of complex division
+  void divnr(float const * const in1, float const * const in2, const int len,
+      float * const out);
+  void divnr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divnr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divnr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+
+  // Point by point multiply of two input buffers using a reciprocal
+  // approximation without Newton-Raphson refinement.  The output buffer may be
+  // the same as one of the input buffers.  This version is more efficient than
+  // the normal div() and divnr() functions but can have larger error from a
+  // true divide.
+  //    in1 = first input buffer for divide (dividend)
+  //    in2 = second input buffer for divide (divisor)
+  //    len = number of elements to divide
+  //    out = output buffer to recieve result of complex division
+  void divr(float const * const in1, float const * const in2, const int len,
+      float * const out);
+  void divr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+  
+  // Point by point complex-conjugate divide of two input buffers, first
+  // input conjugated.  The output buffer may be the same as one of the input
+  // buffers.  This version uses a reciprocal approximation with 1
+  // Newton-Raphson stage for refinement to achieve an answer comparable to
+  // true division for single precision float elements but with increased
+  // efficiency.
+  //    in1 = first input buffer for divide (dividend), conjugated
+  //    in2 = second input buffer for divide (divisor)
+  //    len = number of elements to divide
+  //    out = output buffer to receive result of complex division
+  void divc1(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divc1(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
   // Point by point complex-conjugate divide of two input buffers, second
   // input conjugated.  The output buffer may be the same as one of the input
+  // buffers.  This version uses a reciprocal approximation with 1
+  // Newton-Raphson stage for refinement to achieve an answer comparable to
+  // true division for single precision float elements but with increased
+  // efficiency.
+  //    in1 = first input buffer for divide (dividend)
+  //    in2 = second input buffer for divide (divisor), conjugated
+  //    len = number of elements to divide
+  //    out = output buffer to receive result of complex division
+  void divc2(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divc2(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  
+  // Point by point complex-conjugate divide of two input buffers, first
+  // input conjugated, using a reciprocal approximation with 1 Newton-Raphson
+  // stage for refinement.  The output buffer may be the same as one of the
+  // input buffers.
+  //    in1 = first input buffer for divide (dividend), conjugated
+  //    in2 = second input buffer for divide (divisor)
+  //    len = number of elements to divide
+  //    out = output buffer to receive result of complex division
+  void divc1nr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out);
+  void divc1nr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+  // Point by point complex-conjugate divide of two input buffers, second
+  // input conjugated, using a reciprocal approximation with 1 Newton-Raphson
+  // stage for refinement.  The output buffer may be the same as one of the
+  // input buffers.
+  //    in1 = first input buffer for divide (dividend)
+  //    in2 = second input buffer for divide (divisor), conjugated
+  //    len = number of elements to divide
+  //    out = output buffer to receive result of complex division
+  void divc2nr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out);
+  void divc2nr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out);
+
+  // Point by point complex-conjugate divide of two input buffers, first
+  // input conjugated, using a reciprocal approximation without Newton-Raphson
+  // refinement.  The output buffer may be the same as one of the input
+  // buffers.
+  //    in1 = first input buffer for divide (dividend), conjugated
+  //    in2 = second input buffer for divide (divisor)
+  //    len = number of elements to divide
+  //    out = output buffer to receive result of complex division
+  void divc1r(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out);
+  void divc1r(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+  // Point by point complex-conjugate divide of two input buffers, second
+  // input conjugated, using a reciprocal approximation without Newton-Raphson
+  // refinement.  The output buffer may be the same as one of the input
   // buffers.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor), conjugated
   //    len = number of elements to divide
   //    out = output buffer to receive result of complex division
-  void divc(complex<float> const * const in1, complex<float> const * const in2,
+  void divc2r(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out);
-  void divc(float const * const in1, complex<float> const * const in2,
-      const int len, complex<float> * const out);
-
+  void divc2r(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out);
+  
   //=============//
   // Dot-Product //
   //=============//
@@ -736,9 +881,9 @@ namespace EVM
     return;
   }
 
-  //=================//
-  // Vector Multiply //
-  //=================//
+  //=========================================//
+  // Vector Multiply Function Implementation //
+  //=========================================//
   // real x real
   #if !defined(DISABLE_AVX512)
   __attribute__((__target__("avx512f")))
@@ -797,10 +942,9 @@ namespace EVM
   #endif // AVX real x real
   __attribute__((__target__("default")))
   void mult(float const * const in1, float const * const in2, const int len,
-    float * const out)
+      float * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]*in2[i];
-    return;
   }
 
   // complex x complex
@@ -893,9 +1037,9 @@ namespace EVM
   
   // real x complex
   #if !defined(DISABLE_AVX512)
-  __attribute__((__target__("avx512f")))
+  __attribute__((__target__("avx512f")))  // AVX512 real x complex
   void mult(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+      const int len, complex<float> * const out)
   {
     __m512 ld1, ld2, ld3, sc;
     const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
@@ -947,7 +1091,7 @@ namespace EVM
   #if !defined(DISABLE_AVX2) // AVX2 real x complex 
   __attribute__((__target__("avx2")))
   void mult(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+      const int len, complex<float> * const out)
   {
     __m256 ld1, ld2, ld3, sc;
     const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
@@ -1006,7 +1150,7 @@ namespace EVM
   #if !defined(DISABLE_AVX) // AVX real x complex
   __attribute__((__target__("avx")))
   void mult(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+      const int len, complex<float> * const out)
   {
     __m256 ld1, ld2, ld3, sc1, sc2;
     int i = 0;
@@ -1068,7 +1212,7 @@ namespace EVM
   #endif // end AVX real x complex
   __attribute__((__target__("default"))) // default real x complex
   void mult(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+      const int len, complex<float> * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]*in2[i];
   } // end default real x complex
@@ -1089,7 +1233,7 @@ namespace EVM
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&7 == len%8)
@@ -1106,7 +1250,7 @@ namespace EVM
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
     }
     return;
@@ -1127,7 +1271,7 @@ namespace EVM
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&3 == len%4)
@@ -1145,7 +1289,7 @@ namespace EVM
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     }
     return;
@@ -1408,9 +1552,9 @@ namespace EVM
     return;
   }
   
-  //============================//
-  // Vectory Multiply and Scale //
-  //============================//
+  //====================================================//
+  // Vectory Multiply and Scale Function Implementation //
+  //====================================================//
   // real x real x scale
   #if !defined(DISABLE_AVX512)
   __attribute__((__target__("avx512f")))
@@ -1475,7 +1619,7 @@ namespace EVM
   #endif // AVX real x real x scale
   __attribute__((__target__("default"))) // default real x real x scale
   void mults(float const * const in1, float const * const in2, const int len,
-    const float scale, float * const out)
+      const float scale, float * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]*in2[i]*scale;
   }
@@ -1568,7 +1712,7 @@ namespace EVM
   #endif // AVX complex x complex x scale
   __attribute__((__target__("default"))) // default complex x complex x scale
   void mults(complex<float> const * const in1, complex<float> const * const in2,
-    const int len, const float scale, complex<float> * const out)
+      const int len, const float scale, complex<float> * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]*in2[i]*scale;
   }
@@ -1577,7 +1721,7 @@ namespace EVM
   #if !defined(DISABLE_AVX512)
   __attribute__((__target__("avx512f")))
   void mults(float const * const in1, complex<float> const * const in2,
-    const int len, const float scale, complex<float> * const out)
+      const int len, const float scale, complex<float> * const out)
   {
     __m512 ld1, ld2, ld3, sc;
     const __m512 sca = _mm512_set1_ps(scale);
@@ -1633,7 +1777,7 @@ namespace EVM
   #if !defined(DISABLE_AVX2) // AVX2 real x complex x scale
   __attribute__((__target__("avx2")))
   void mults(float const * const in1, complex<float> const * const in2,
-    const int len, const float scale, complex<float> * const out)
+      const int len, const float scale, complex<float> * const out)
   {
     __m256 ld1, ld2, ld3, sc;
     const __m256 sca = _mm256_set1_ps(scale);
@@ -1695,7 +1839,7 @@ namespace EVM
   #if !defined(DISABLE_AVX) // AVX real x complex x scale
   __attribute__((__target__("avx")))
   void mults(float const * const in1, complex<float> const * const in2,
-    const int len, const float scale, complex<float> * const out)
+      const int len, const float scale, complex<float> * const out)
   {
     __m256 ld1, ld2, ld3, sc1, sc2;
     const __m256 sca = _mm256_set1_ps(scale);
@@ -1768,8 +1912,9 @@ namespace EVM
   // complex x conj(complex) x scale
   #if !defined(DISABLE_AVX512) // AVX512 complex x conj(complex) x scale
   __attribute__((__target__("avx512f")))
-  void multcs(complex<float> const * const in1, complex<float> const * const in2,
-      const int len, const float scale, complex<float> * const out)
+  void multcs(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, const float scale,
+      complex<float> * const out)
   {
     __m512 ld1, ld2, sh, re, im;
     const __m512 sc = _mm512_set1_ps(scale);
@@ -1783,7 +1928,7 @@ namespace EVM
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&7 == len%8)
@@ -1801,7 +1946,7 @@ namespace EVM
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
     }
     return;
@@ -1809,8 +1954,9 @@ namespace EVM
   #endif // AVX512 complex x conj(complex) x scale
   #if !defined(DISABLE_AVX2)
   __attribute__((__target__("avx2,fma")))
-  void multcs(complex<float> const * const in1, complex<float> const * const in2,
-      const int len, const float scale, complex<float> * const out)
+  void multcs(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, const float scale,
+      complex<float> * const out)
   {
     __m256 ld1, ld2, sh, re, im;
     const __m256 sc = _mm256_set1_ps(scale);
@@ -1824,7 +1970,7 @@ namespace EVM
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&3 == len%4)
@@ -1843,7 +1989,7 @@ namespace EVM
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
       ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
       _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     }
     return;
@@ -1851,8 +1997,9 @@ namespace EVM
   #endif // end AVX2 complex x conj(complex) x scale
   #if !defined(DISABLE_AVX) // AVX complex x conj(complex) x scale
   __attribute__((__target__("avx")))
-  void multcs(complex<float> const * const in1, complex<float> const * const in2,
-      const int len, const float scale, complex<float> * const out)
+  void multcs(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, const float scale,
+      complex<float> * const out)
   {
     __m256 ld1, ld2, sh, re, im;
     const __m256 sc = _mm256_setr_ps(scale, -scale, scale, -scale, scale,
@@ -1897,14 +2044,14 @@ namespace EVM
   // default complex x conj(complex) x scale
   __attribute__((__target__("default")))
   void multcs(float const * const in1, complex<float> const * const in2,
-    const int len, const float scale, complex<float> * const out)
+      const int len, const float scale, complex<float> * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]*conj(in2[i])*scale;
   }
 
-  //===============//
-  // Vector Divide //
-  //===============//
+  //=======================================//
+  // Vector Divide Function Implementation //
+  //=======================================//
   // real / real
   #if !defined(DISABLE_AVX512)
   __attribute__((__target__("avx512f")))
@@ -1915,8 +2062,8 @@ namespace EVM
     int i = 0;
     for(; i<len-15; i+=16) // process 16 real elements per register
     {
-      ld1 = _mm512_loadu_ps(&in1[i]);
       ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_loadu_ps(&in1[i]);
       ld1 = _mm512_div_ps(ld1, ld2);
       _mm512_storeu_ps(&out[i], ld1);
     }
@@ -1927,7 +2074,7 @@ namespace EVM
       const __mmask16 mk = MASK16(rem);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
-      ld1 = _mm512_div_ps(ld1, ld2);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
       _mm512_mask_storeu_ps(&out[i], mk, ld1);
     }
     return;
@@ -1963,7 +2110,7 @@ namespace EVM
   #endif // AVX real / real
   __attribute__((__target__("default"))) // default real / real
   void div(float const * const in1, float const * const in2, const int len,
-    float * const out)
+      float * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
   }
@@ -1983,8 +2130,12 @@ namespace EVM
       sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm512_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&7 == len%8)
@@ -2000,8 +2151,12 @@ namespace EVM
       sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
       im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
       re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
     }
     return;
@@ -2019,10 +2174,14 @@ namespace EVM
       ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&3 == len%4)
@@ -2036,11 +2195,15 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, ld2);// [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     }
     return;
@@ -2063,9 +2226,13 @@ namespace EVM
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
       ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
-      ld1 = _mm256_addsub_ps(ld1, ld2);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
     }
     // handle remaining elements (note len&3 == len%4)
@@ -2083,9 +2250,13 @@ namespace EVM
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
       ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
-      ld1 = _mm256_addsub_ps(ld1, ld2);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
       _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     }
     return;
@@ -2093,40 +2264,3116 @@ namespace EVM
   #endif // end AVX complex / complex
   __attribute__((__target__("default"))) // default complex / complex
   void div(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+  }
+
+  // real / complex
+  #if !defined(DISABLE_AVX512) // AVX512 real / complex
+  __attribute__((__target__("avx512f")))
+  void div(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc1, sc2, sh;
+    // permutation constants to copy each real element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1); // repeat each real
+      sc2 = _mm512_permutexvar_ps(p2, ld1); // repeat each real
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      sc2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc2),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * conj(in2[i+8])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      ld2 = _mm512_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm512_div_ps(ld3, sh);   // (in1*conj(in2[i+8]))/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      sc2 = _mm512_permutexvar_ps(p2, ld1);
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      sc2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc2),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * conj(in2[i+8])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      ld2 = _mm512_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm512_maskz_div_ps(mk, ld3, sh);// (in1*conj(in2[i+8]))/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      ld2 = _mm512_maskz_div_ps(mk, ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 real / complex
+  #if !defined(DISABLE_AVX2) // AVX2 real / complex
+  __attribute__((__target__("avx2")))
+  void div(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+      sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+      sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+      sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+        sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 real / complex
+  #if !defined(DISABLE_AVX) // AVX real / complex
+  __attribute__((__target__("avx")))
+  void div(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+      sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX real / complex
+  __attribute__((__target__("default"))) // default real / complex
+  void div(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+  }
+
+  // complex / real
+  #if !defined(DISABLE_AVX512) // AVX512 complex / real
+  __attribute__((__target__("avx512f")))
+  void div(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc;
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i+8]));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      ld3 = _mm512_div_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i+8]));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      ld3 = _mm512_div_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i]));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 complex / real
+  #if !defined(DISABLE_AVX2) // AVX2 complex / real
+  __attribute__((__target__("avx2")))
+  void div(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      ld2 = _mm256_div_ps(ld2, sc);
+      ld3 = _mm256_div_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        ld2 = _mm256_div_ps(ld2, sc);
+        ld3 = _mm256_div_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld2 = _mm256_div_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 complex / real
+  #if !defined(DISABLE_AVX) // AVX complex / real
+  __attribute__((__target__("avx")))
+  void div(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      ld2 = _mm256_div_ps(ld2, sc1);
+      ld3 = _mm256_div_ps(ld3, sc2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        ld2 = _mm256_div_ps(ld2, sc1);
+        ld3 = _mm256_div_ps(ld3, sc2);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        ld2 = _mm256_div_ps(ld2, sc1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX complex / real
+  __attribute__((__target__("default"))) // default complex / real
+  void div(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+  } // end default real x complex
+
+  // real / real with 1 stage of Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512)
+  __attribute__((__target__("avx512f")))
+  void divnr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    __m512 ld1, ld2, inv;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m512 two = _mm512_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      inv = _mm512_rcp14_ps(ld2);   // old
+      // use one newton-raphson stage (new = old*(2-orig*old)) where 'new' is
+      // updated reciprocal approx, 'old' is the current reciprocal approx,
+      // and 'orig' is the original value we're trying to invert
+      ld2 = _mm512_fnmadd_ps(ld2, inv, two);  // 2-orig*old
+      ld2 = _mm512_mul_ps(ld2, inv);          // old*(2-orig*old)
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = MASK16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      inv = _mm512_rcp14_ps(ld2);             // old
+      ld2 = _mm512_fnmadd_ps(ld2, inv, two);  // 2-orig*old
+      ld2 = _mm512_mul_ps(inv, ld2);          // old*(2-orig*old)
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 real / real
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divnr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    __m256 ld1, ld2, inv;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      inv = _mm256_rcp14_ps(ld2); // old
+      // use one newton-raphson stage (new = old*(2-orig*old)) where 'new' is
+      // updated reciprocal approx, 'old' is the current reciprocal approx,
+      // and 'orig' is the original value we're trying to invert
+      ld2 = _mm256_fnmadd_ps(ld2, inv, two);  // 2-orig*old
+      ld2 = _mm256_mul_ps(inv, ld2);          // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      inv = _mm256_rcp14_ps(ld2);             // old
+      ld2 = _mm256_fnmadd_ps(ld2, inv, two);  // 2-orig*old
+      ld2 = _mm256_mul_ps(inv, ld2);          // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #if !defined(DISABLE_AVX)
+  __attribute__((__target__("avx")))
+  void divnr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    __m256 ld1, ld2, inv;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      inv = _mm256_rcp14_ps(ld2);   // old
+      // use one newton-raphson stage (new = old*(2-orig*old)) where 'new' is
+      // updated reciprocal approx, 'old' is the current reciprocal approx,
+      // and 'orig' is the original value we're trying to invert
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(inv, ld2); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      inv = _mm256_rcp14_ps(ld2);    // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(inv, ld2); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // AVX real / real
+  __attribute__((__target__("default"))) // default real / real
+  void divnr(float const * const in1, float const * const in2, const int len,
+    float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+  }
+
+  // complex / complex with reciprocal approximation and 1 stage Newton-Raphson
+  #if !defined(DISABLE_AVX512) // AVX512 complex * recip(complex) with NR
+  __attribute__((__target__("avx512f")))
+  void divnr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, sh, re, im;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m512 two = _mm512_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm512_rcp14_ps(ld2);    // inv
+      ld2 = _mm512_fnmadd_ps(ld2, re, two); // 2-orig*inv
+      ld2 = _mm512_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm512_rcp14_ps(ld2);    // inv
+      ld2 = _mm512_fnmadd_ps(ld2, re, two); // 2-orig*inv
+      ld2 = _mm512_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 complex * recip(complex) with NR
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divnr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm256_rcp14_ps(ld2);    // inv
+      ld2 = _mm256_fnmadd_ps(ld2, re, two); // 2-orig*inv
+      ld2 = _mm256_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm256_rcp14_ps(ld2);    // inv
+      ld2 = _mm256_fnmadd_ps(ld2, re, two); // 2-orig*inv
+      ld2 = _mm256_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 complex * recip(complex) with NR
+  #if !defined(DISABLE_AVX) // AVX complex * recip(complex) with NR
+  __attribute__((__target__("avx")))
+  void divnr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm256_rcp14_ps(ld2);    // inv
+      ld2 = _mm256_mul_ps(ld2, re); // orig*inv
+      ld2 = _mm256_sub_ps(two, ld2);// 2-orig*old
+      ld2 = _mm256_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      re = _mm256_rcp14_ps(ld2);    // inv
+      ld2 = _mm256_mul_ps(ld2, re); // orig*inv
+      ld2 = _mm256_sub_ps(two, ld2);// 2-orig*old
+      ld2 = _mm256_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX complex * recip(complex) with NR
+  __attribute__((__target__("default"))) // default complex * recip(complex) NR
+  void divnr(complex<float> const * const in1, complex<float> const * const in2,
     const int len, complex<float> * const out)
   {
     for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
   }
 
   
-  __attribute__((__target__("default"))) // default real / complex
-  void div(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
-  {
 
+
+
+
+  // real / real using reciprocal approximation
+  #if !defined(DISABLE_AVX512)
+  __attribute__((__target__("avx512f"))) // AVX512 real * recip(real)
+  void divr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_rcp14_ps(ld2);
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = MASK16(rem);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_rcp14_ps(ld2);
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 real * recip(real)
+  #if !defined(DISABLE_AVX)
+  __attribute__((__target__("avx"))) // AVX real * recip(real)
+  void divr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_rcp14_ps(ld2);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_rcp14_ps(ld2);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // AVX real * recip(real)
+  __attribute__((__target__("default"))) // default real * recip(real)
+  void divr(float const * const in1, float const * const in2, const int len,
+      float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
   }
 
-  __attribute__((__target__("default"))) // default complex / real
-  void div(complex<float> const * const in1, float const * const in2,
-    const int len, complex<float> * const out)
+  // complex / complex using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 complex * recip(complex)
+  __attribute__((__target__("avx512f")))
+  void divr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
   {
-
+    __m512 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_maskz_rcp14_ps(mk, ld2);  // 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 complex * recip(complex)
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma"))) // AVX2 complex * recip(complex)
+  void divr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 complex * recip(complex)
+  #if !defined(DISABLE_AVX) // AVX complex * recip(complex)
+  __attribute__((__target__("avx")))
+  void divr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX complex * recip(complex)
+  __attribute__((__target__("default"))) // default complex * recip(complex)
+  void divr(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
   }
   
-  __attribute__((__target__("default"))) // default complex / conj(complex)
-  void divc(complex<float> const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+  // real / complex using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 real * recip(complex)
+  __attribute__((__target__("avx512f")))
+  void divr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
   {
-
+    __m512 ld1, ld2, ld3, sc1, sc2, sh;
+    // permutation constants to copy each real element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1); // repeat each real
+      sc2 = _mm512_permutexvar_ps(p2, ld1); // repeat each real
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      sc2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc2),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * conj(in2[i+8])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      sc2 = _mm512_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm512_rcp14_ps(sh);       // 1/|in2[i+8]|^2
+      ld2 = _mm512_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm512_mul_ps(ld3, sh);   // (in1*conj(in2[i+8]))/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      sc2 = _mm512_permutexvar_ps(p2, ld1);
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      sc2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc2),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * conj(in2[i+8])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      sc2 = _mm512_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm512_maskz_rcp14_ps(mk, sh); // 1/|in2[i+8]|^2
+      ld2 = _mm512_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm512_mul_ps(ld3, sh);   // (in1*conj(in2[i+8]))/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      sc1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(sc1),neg));
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sc2 = _mm512_maskz_rcp14_ps(mk, sc2);    // 1/|in2[i]|^2
+      ld2 = _mm512_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 real * recip(complex)
+  #if !defined(DISABLE_AVX2) // AVX2 real * recip(complex)
+  __attribute__((__target__("avx2")))
+  void divr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+      sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+      sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+      sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+      ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+        sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 real * recip(complex)
+  #if !defined(DISABLE_AVX) // AVX real * recip(complex)
+  __attribute__((__target__("avx")))
+  void divr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+      sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+      ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        sc2 = _mm256_xor_ps(sc2, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX real * recip(complex)
+  __attribute__((__target__("default"))) // default real * recip(complex)
+  void divr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+  }
+  
+  // complex / real using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 complex * recip(real)
+  __attribute__((__target__("avx512f")))
+  void divr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc;
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i+8]));
+      ld1 = _mm512_rcp14_ps(ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i+8]));
+      ld1 = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i]));
+      ld1 = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 complex * recip(real)
+  #if !defined(DISABLE_AVX2) // AVX2 complex * recip(real)
+  __attribute__((__target__("avx2")))
+  void divr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_rcp14_ps(ld1);
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      ld2 = _mm256_mul_ps(ld2, sc);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld1 = _mm256_rcp14_ps(ld1);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        ld2 = _mm256_mul_ps(ld2, sc);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld1 = _mm256_rcp14_ps(ld1);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld2 = _mm256_mul_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 complex * recip(real)
+  #if !defined(DISABLE_AVX) // AVX complex * recip(real)
+  __attribute__((__target__("avx")))
+  void divr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_rcp14_ps(ld1);
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      ld2 = _mm256_mul_ps(ld2, sc1);
+      ld3 = _mm256_mul_ps(ld3, sc2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld1 = _mm256_rcp14_ps(ld1);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        ld3 = _mm256_mul_ps(ld3, sc2);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld1 = _mm256_rcp14_ps(ld1);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX complex * recip(real)
+  __attribute__((__target__("default"))) // default complex * recip(real)
+  void divr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
   }
 
+  // complex conjugate / complex
+  #if !defined(DISABLE_AVX512) // AVX512 conj(complex) / complex
+  __attribute__((__target__("avx512f")))
+  void divc1(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, sh, re, im;
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      // conj(A), note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld1),neg));
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [-Ai0*Bi0,Ar0*Bi0,...,-Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm512_div_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      // conj(A), note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld1),neg));
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [-Ai0*Bi0,Ar0*Bi0,...,-Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      // (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 conj(complex) / complex
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divc1(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai3,Ar3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 conj(complex) / complex
+  #if !defined(DISABLE_AVX) // AVX conj(complex) / complex
+  __attribute__((__target__("avx")))
+  void divc1(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A*B) == conj(A)*conj(B)
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A*B) == conj(A)*conj(B)
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX conj(complex) / complex
+  __attribute__((__target__("default"))) // default conj(complex) / complex
+  void divc1(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+  }
+  
+  // complex conjugate / real
+  #if !defined(DISABLE_AVX512) // AVX512 conj(complex) / real
+  __attribute__((__target__("avx512f")))
+  void divc1(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc;
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i+8]));
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      ld3 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld3),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      ld3 = _mm512_div_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i+8]));
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      ld3 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld3),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      ld3 = _mm512_div_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i]));
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld2 = _mm512_div_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 conj(complex) / real
+  #if !defined(DISABLE_AVX2) // AVX2 conj(complex) / real
+  __attribute__((__target__("avx2")))
+  void divc1(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+      ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      ld2 = _mm256_div_ps(ld2, sc);
+      ld3 = _mm256_div_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        ld2 = _mm256_div_ps(ld2, sc);
+        ld3 = _mm256_div_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld2 = _mm256_div_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 conj(complex) / real
+  #if !defined(DISABLE_AVX) // AVX conj(complex) / real
+  __attribute__((__target__("avx")))
+  void divc1(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+      ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      ld2 = _mm256_div_ps(ld2, sc1);
+      ld3 = _mm256_div_ps(ld3, sc2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        ld2 = _mm256_div_ps(ld2, sc1);
+        ld3 = _mm256_div_ps(ld3, sc2);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        ld2 = _mm256_div_ps(ld2, sc1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX conj(complex) / real
+  __attribute__((__target__("default"))) // default conj(complex) / real
+  void divc1(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+  }
+  
+  // real / complex conjugate
+  #if !defined(DISABLE_AVX512) // AVX512 real / conj(complex)
+  __attribute__((__target__("avx512f")))
+  void divc2(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc1, sc2, sh;
+    // permutation constants to copy each real element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1); // repeat each real
+      sc2 = _mm512_permutexvar_ps(p2, ld1); // repeat each real
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * in2[i+8]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      ld2 = _mm512_div_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm512_div_ps(ld3, sh);   // (in1*in2[i+8])/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      sc2 = _mm512_permutexvar_ps(p2, ld1);
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * in2[i+8]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      ld2 = _mm512_div_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm512_maskz_div_ps(mk, ld3, sh);// (in1*in2[i+8])/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      ld2 = _mm512_maskz_div_ps(mk, ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 real / conj(complex)
+  #if !defined(DISABLE_AVX2) // AVX2 real / conj(complex)
+  __attribute__((__target__("avx2")))
+  void divc2(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+      sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * in2[i+4]
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      ld2 = _mm256_div_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm256_div_ps(ld3, sh);   // (in1*in2[i+4])/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+        sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 real / conj(complex)
+  #if !defined(DISABLE_AVX) // AVX real / conj(complex)
+  __attribute__((__target__("avx")))
+  void divc2(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_div_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        ld2 = _mm256_div_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX real / conj(complex)
   __attribute__((__target__("default"))) // default real / conj(complex)
-  void divc(float const * const in1, complex<float> const * const in2,
-    const int len, complex<float> * const out)
+  void divc2(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+  }
+
+  // complex / complex conjugate
+  #if !defined(DISABLE_AVX512) // AVX512 complex / conj(complex)
+  __attribute__((__target__("avx512f")))
+  void divc2(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm512_div_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 complex / conj(complex)
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divc2(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 complex / conj(complex)
+  #if !defined(DISABLE_AVX) // AVX complex / conj(complex)
+  __attribute__((__target__("avx")))
+  void divc2(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld1 = _mm256_div_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX complex / conj(complex)
+  __attribute__((__target__("default"))) // default complex / conj(complex)
+  void divc2(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+  }
+  
+  __attribute__((__target__("default"))) // default conj(complex) / complex
+  void divc1nr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out)
   {
 
   }
 
+  __attribute__((__target__("default"))) // default conj(complex) / real
+  void divc1nr(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+
+  }
   
+  __attribute__((__target__("default"))) // default real / conj(complex)
+  void divc2nr(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+
+  }
+
+  __attribute__((__target__("default"))) // default complex / conj(complex)
+  void divc2nr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out)
+  {
+
+  }
+
+  // complex conjugate / complex using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 conj(complex) * recip(complex)
+  __attribute__((__target__("avx512f")))
+  void divc1r(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, sh, re, im;
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      // conj(A), note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld1),neg));
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [-Ai0*Bi0,Ar0*Bi0,...,-Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      // conj(A), note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld1 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld1),neg));
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [-Ai0*Bi0,Ar0*Bi0,...,-Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_rcp14_ps(ld2);   // 1/|B|^2
+      // (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      ld1 = _mm512_maskz_mul_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 conj(complex) * recip(complex)
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divc1r(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai7,Ar7]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);// [-Ai0,Ar0,-Ai1,Ar1,...,-Ai3,Ar3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 conj(complex) * recip(complex)
+  #if !defined(DISABLE_AVX) // AVX conj(complex) * recip(complex)
+  __attribute__((__target__("avx")))
+  void divc1r(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A*B) == conj(A)*conj(B)
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld1 = _mm256_xor_ps(ld1, neg);// conj(A*B) == conj(A)*conj(B)
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (conj(A)*conj(B))/|B|^2 == conj(A)/B
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX conj(complex) * recip(complex)
+  __attribute__((__target__("default"))) // default conj(complex)*recip(complex)
+  void divc1r(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+  }
+
+  // complex conjugate / real using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 conj(complex) * recip(real)
+  __attribute__((__target__("avx512f")))
+  void divc1r(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc;
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // constant to negate every other value for complex conjugation
+    const __m512i neg = _mm512_setr_epi32(0, 0x80000000, 0, 0x80000000, 0,
+        0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000, 0, 0x80000000,
+        0, 0x80000000);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i+8]));
+      // negate every other element, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      ld3 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld3),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      sc = _mm512_rcp14_ps(sc);
+      ld1 = _mm512_rcp14_ps(ld1);
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i+8]));
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      ld3 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld3),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      sc = _mm512_rcp14_ps(sc);
+      ld1 = _mm512_rcp14_ps(ld1);
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in1[i]));
+      ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      sc = _mm512_rcp14_ps(sc);
+      ld2 = _mm512_mul_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 conj(complex) * recip(real)
+  #if !defined(DISABLE_AVX2) // AVX2 conj(complex) * recip(real)
+  __attribute__((__target__("avx2")))
+  void divc1r(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+      ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      sc = _mm256_rcp14_ps(sc);
+      ld1 = _mm256_rcp14_ps(ld1);
+      ld2 = _mm256_mul_ps(ld2, sc);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        sc = _mm256_rcp14_ps(sc);
+        ld1 = _mm256_rcp14_ps(ld1);
+        ld2 = _mm256_mul_ps(ld2, sc);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        sc = _mm256_rcp14_ps(sc);
+        ld2 = _mm256_mul_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 conj(complex) * recip(real)
+  #if !defined(DISABLE_AVX) // AVX conj(complex) * recip(real)
+  __attribute__((__target__("avx")))
+  void divc1r(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2;
+    const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
+        0.0f, -0.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+      ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      sc1 = _mm256_rcp14_ps(sc1);
+      sc2 = _mm256_rcp14_ps(sc2);
+      ld2 = _mm256_mul_ps(ld2, sc1);
+      ld3 = _mm256_mul_ps(ld3, sc2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        sc1 = _mm256_rcp14_ps(sc1);
+        sc2 = _mm256_rcp14_ps(sc2);
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        ld3 = _mm256_mul_ps(ld3, sc2);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+            msk2);
+        ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc1 = _mm256_rcp14_ps(sc1);
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX conj(complex) * recip(real)
+  __attribute__((__target__("default"))) // default conj(complex) * recip(real)
+  void divc1r(complex<float> const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+  }
+  
+
+  // real / complex conjugate using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 real * recip(conj(complex))
+  __attribute__((__target__("avx512f")))
+  void divc2r(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, ld3, sc1, sc2, sh;
+    // permutation constants to copy each real element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1); // repeat each real
+      sc2 = _mm512_permutexvar_ps(p2, ld1); // repeat each real
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * in2[i+8]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      sc2 = _mm512_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm512_rcp14_ps(sh);       // 1/|in2[i+8]|^2
+      ld2 = _mm512_mul_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm512_mul_ps(ld3, sh);   // (in1*in2[i+8])/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i+8]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      sc2 = _mm512_permutexvar_ps(p2, ld1);
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm512_mul_ps(ld3, ld3);  // in2[i+8]^2
+      ld3 = _mm512_mul_ps(ld3, sc2);  // in1 * in2[i+8]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm512_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+8]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm512_add_ps(sc1, sh);    // |in2[i+8]|^2
+      sc2 = _mm512_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm512_rcp14_ps(sh);       // 1/|in2[i+8]|^2
+      ld2 = _mm512_mul_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm512_maskz_mul_ps(mk, ld3, sh);// (in1*in2[i+8])/|in2[i+8]|^2
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+          ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const * const>(&in2[i]));
+      sc1 = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm512_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sc2 = _mm512_add_ps(sc2, ld1);  // |in2[i]|^2
+      sc2 = _mm512_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      ld2 = _mm512_maskz_mul_ps(mk, ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 real * recip(conj(complex))
+  #if !defined(DISABLE_AVX2) // AVX2 real * recip(conj(complex))
+  __attribute__((__target__("avx2")))
+  void divc2r(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+      sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * in2[i]
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * in2[i+4]
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+      ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*in2[i])/|in2[i]|^2
+      ld3 = _mm256_mul_ps(ld3, sh);   // (in1*in2[i+4])/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
+        sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc1 = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // AVX2 real * recip(conj(complex))
+  #if !defined(DISABLE_AVX) // AVX real * recip(conj(complex))
+  __attribute__((__target__("avx")))
+  void divc2r(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, ld3, sc1, sc2, sh;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+      sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+      sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+      sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+      ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+      ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+      sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+      ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+      sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+      sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+      sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+      sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+      sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+      sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+      ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+      ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        sc2 = _mm256_permute2f128_ps(sc2, ld1, 0x31); // [4,4,5,5,6,6,7,7]
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc1 = _mm256_mul_ps(ld3, ld3);  // in2[i+4]^2
+        ld3 = _mm256_mul_ps(ld3, sc2);  // in1 * conj(in2[i+4])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sh = _mm256_shuffle_ps(sc1, sc1, 0xb1);  // in2[i+4]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sh = _mm256_add_ps(sc1, sh);    // |in2[i+4]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        sh = _mm256_rcp14_ps(sh);       // 1/|in2[i+4]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        ld3 = _mm256_mul_ps(ld3, sh);   // (in1*conj(in2[i+4]))/|in2[i+4]|^2
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+            msk2);
+        sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
+        ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
+        sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
+        ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
+        ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
+        sc2 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // in2[i]^2 swap(re,im)
+        sc2 = _mm256_add_ps(sc2, ld1);  // |in2[i]|^2
+        sc2 = _mm256_rcp14_ps(sc2);     // 1/|in2[i]|^2
+        ld2 = _mm256_mul_ps(ld2, sc2);  // (in1*conj(in2[i]))/|in2[i]|^2
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX real * recip(conj(complex))
+  __attribute__((__target__("default"))) // default real * recip(conj(complex))
+  void divc2r(float const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+  }
+
+
+  // complex / complex conjugate using reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 complex*recip(conj(complex))
+  __attribute__((__target__("avx512f")))
+  void divc2r(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m512 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = MASK16((rem<<1));
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+          &in2[i])); // B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm512_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm512_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm512_maskz_mul_ps(mk, ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // AVX512 complex*recip(conj(complex))
+  #if !defined(DISABLE_AVX2)
+  __attribute__((__target__("avx2,fma")))
+  void divc2r(complex<float> const * const in1, complex<float> const * const in2,
+      const int len, complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 complex*recip(conj(complex))
+  #if !defined(DISABLE_AVX) // AVX complex*recip(conj(complex))
+  __attribute__((__target__("avx")))
+  void divc2r(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out)
+  {
+    __m256 ld1, ld2, sh, re, im;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
+          msk);
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
+          msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
+      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
+      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+      ld2 = _mm256_rcp14_ps(ld2);   // 1/|B|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
+      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX complex*recip(conj(complex))
+  __attribute__((__target__("default"))) // default complex*recip(conj(complex))
+  void divc2r(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      complex<float> * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+  }
+
+  //=====================================//
+  // Dot-Product Function Implementation //
+  //=====================================//
+
+  //========================================//
+  // Raise to Power Function Implementation //
+  //========================================//
+
+  //=====================================================//
+  // Magnitude/Magnitude Squared Function Implementation //
+  //=====================================================//
+
+  //===============================================//
+  // Specialized Functions Function Implementation //
+  //===============================================//
+
 } // namespace EVM
 #endif // EFFICIENT_VECTOR_MATH_H
