@@ -763,7 +763,7 @@ namespace EVM
       ld3 = _mm256_permute2f128_ps(ld1, ld2, 0x20); // 
       ld1 = _mm256_permute2f128_ps(ld1, ld2, 0x31); // 
       _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld3);
-      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld1);
     }
     // handle remaining elements (note len&7 == len%8)
     const int rem = len&7;
