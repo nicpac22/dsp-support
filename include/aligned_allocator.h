@@ -1,5 +1,6 @@
 /* 
- * Copyright (c) 2012 Michael Ihde
+ * Copyright (c) 2026 Nick Xenias
+ * Based on 2012 software developed by Michael Ihde
  * 
  * This program is free software: you can redistribute it and/or modify  
  * it under the terms of the GNU Lesser General Public License as   
@@ -19,42 +20,36 @@
 #ifndef _ALIGNED_ALLOCATOR_H_
 #define _ALIGNED_ALLOCATOR_H_
 
+#include <cstddef>   // size_t, ptrdiff_t
 #include <cstdlib>
-#include <bits/functexcept.h>
+#include <new>       // std::bad_alloc
 #include <stdlib.h>
 
-template <typename alignT>
-class aligned_allocator_traits
+// Alignment and trailing pad are both specified in BYTES.  The alignment must
+// be a power of two and at least sizeof(void*) (a posix_memalign requirement).
+template<size_t AlignBytes, size_t PadBytes = 0>
+struct aligned_allocator_traits
 {
-  public:
-    typedef alignT align_type;
-    static const size_t align_bytes = sizeof(align_type);
-    static const size_t pad_bytes = 0;
+  static_assert((AlignBytes & (AlignBytes-1)) == 0 && AlignBytes >= sizeof(void*),
+      "aligned_allocator_traits: alignment must be a power of two and at least "
+      "sizeof(void*)");
+  static constexpr size_t align_bytes = AlignBytes;
+  static constexpr size_t pad_bytes = PadBytes;
 };
 
-// NB: sizes are BYTE alignment, not bits, i.e. align_16 is a 16-byte alignment
-typedef aligned_allocator_traits<int16_t> align_16;
-typedef aligned_allocator_traits<int32_t> align_32;
-typedef aligned_allocator_traits<int64_t> align_64;
+typedef aligned_allocator_traits<16> align_16;
+typedef aligned_allocator_traits<32> align_32;
+typedef aligned_allocator_traits<64> align_64;
 
 // Alignment with extra 2xalignment worth of pad bytes appended to the end,
 // allowing for over-indexing on read of up to 2 SIMD registers without
 // causing segfaults
-template<typename alignT>
-class evm_aligned_allocator_traits
-{
-  public:
-    typedef alignT align_type;
-    static const size_t align_bytes = sizeof(align_type);
-    static const size_t pad_bytes = sizeof(align_type)*2;
-};
+typedef aligned_allocator_traits<16, 32> evm_16;
+typedef aligned_allocator_traits<32, 64> evm_32;
+typedef aligned_allocator_traits<64, 128> evm_64;
+typedef evm_64 evm_max;
 
-typedef evm_aligned_allocator_traits<int16_t> evm_16;
-typedef evm_aligned_allocator_traits<int32_t> evm_32;
-typedef evm_aligned_allocator_traits<int64_t> evm_64;
-typedef evm_aligned_allocator_traits<int64_t> evm_max;
-
-template<typename _Tp, typename traits = aligned_allocator_traits<int16_t> >
+template<typename _Tp, typename traits = align_16>
 class aligned_allocator
 {
   public:
@@ -101,7 +96,7 @@ class aligned_allocator
     {
       if(__builtin_expect(__n > this->max_size(), false))
       {
-	      std::__throw_bad_alloc();
+	      throw std::bad_alloc();
       }
 
       void* tmpvalue = 0;
@@ -110,11 +105,11 @@ class aligned_allocator
                                (__n * sizeof(_Tp))+traits::pad_bytes);
       if(ret)
       {
-	      std::__throw_bad_alloc();
+	      throw std::bad_alloc();
       }
       if(!tmpvalue)
       {
-	      std::__throw_bad_alloc();
+	      throw std::bad_alloc();
       }
       
       return reinterpret_cast<_Tp*>(tmpvalue);
@@ -128,7 +123,8 @@ class aligned_allocator
 
     size_type max_size() const throw() 
     {
-      return size_t(-1) / sizeof(_Tp);
+      // leave room for the pad bytes so n*sizeof(_Tp)+pad_bytes can't wrap
+      return (size_t(-1) - traits::pad_bytes) / sizeof(_Tp);
     }
 
     // _GLIBCXX_RESOLVE_LIB_DEFECTS
@@ -144,16 +140,16 @@ class aligned_allocator
     }
 };
 
-template<typename _Tp>
-inline bool operator==(const aligned_allocator<_Tp>&,
-                       const aligned_allocator<_Tp>&)
+template<typename _Tp1, typename _Tp2, typename traits>
+inline bool operator==(const aligned_allocator<_Tp1,traits>&,
+                       const aligned_allocator<_Tp2,traits>&)
 {
   return true;
 }
 
-template<typename _Tp>
-inline bool operator!=(const aligned_allocator<_Tp>&,
-                       const aligned_allocator<_Tp>&)
+template<typename _Tp1, typename _Tp2, typename traits>
+inline bool operator!=(const aligned_allocator<_Tp1,traits>&,
+                       const aligned_allocator<_Tp2,traits>&)
 {
   return false;
 }
