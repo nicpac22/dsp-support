@@ -93,9 +93,14 @@
 //    divnr = point-by-point vector divide using a reciprocal approximation with
 //        1 Newton-Raphson stage for refinement, this is the preferred
 //        implementation for moderate buffer sizes (fit in cache) with a
-//        reasonable tradeoff between accuracy (1-2 ulp) and speed
+//        reasonable tradeoff between accuracy (within 2 ulp of true division
+//        with AVX512, 3 ulp with AVX2 and 4 ulp with AVX, and within 1 ulp
+//        ~97-99% of the time) and speed
 //    divr = point-by-point vector divide using fast reciprocal approximation
-//        without Newton-Raphson refinement
+//        without Newton-Raphson refinement, this favors speed more than
+//        accuracy and can result in maximum error of ~512 ulp near 1.0 for
+//        AVX512 (6.1e-5 normalized absolute error) or 3072 ulp near 1.0 for
+//        AVX2/AVX (3.7e-4 normalized absolute error)
 //    divc1 = point-by-point complex conjugate divide, first input conjugated,
 //        true division
 //    divc1nr = point-by-point complex conjugate divide, first input
@@ -158,6 +163,7 @@
 #endif // DISABLE_SIMD
 
 using std::vector;
+using std::complex;
 
 // for memory allocation and register size, start with largest and work down
 // to smallest, as long as an instruction set is not explicitly disabled,
@@ -187,30 +193,31 @@ using std::vector;
 #define ALIGNED_ITERATOR(type) vector<type, aligned_allocator<type, evm_align> >::iterator
 #endif
 
-// define some basic macros for doing masked load/store
-// macro to generate mask for AVX512 maskz_load and mask_store, if output bit
-// is 0, that float does not get loaded/stored, so take the number you want
-// loaded/stored, and shift right which will put 16-X zeroes in the msb's and
-// X ones in the lsb's
-#define MASK16(X) (unsigned short)(0xffff>>(16-(X)))
-
-// mask table for AVX instructions, rows can be cast as __m256i* directly
-alignas(32) inline constexpr int32_t masks[9][8] = {
-  { 0, 0, 0, 0, 0, 0, 0, 0},   // remainder 0 (unused)
-  {-1, 0, 0, 0, 0, 0, 0, 0},   // remainder 1
-  {-1,-1, 0, 0, 0, 0, 0, 0},   // remainder 2
-  {-1,-1,-1, 0, 0, 0, 0, 0},   // remainder 3
-  {-1,-1,-1,-1, 0, 0, 0, 0},   // remainder 4
-  {-1,-1,-1,-1,-1, 0, 0, 0},   // remainder 5
-  {-1,-1,-1,-1,-1,-1, 0, 0},   // remainder 6
-  {-1,-1,-1,-1,-1,-1,-1, 0},   // remainder 7
-  {-1,-1,-1,-1,-1,-1,-1,-1}    // remainder 4 complex elements (masks[rem<<1])
-};
-
-using std::complex;
-
 namespace EVM
 {
+  // mask table for the final partial register of the AVX/AVX2 kernels, rows
+  // can be cast as __m256i* directly and row n selects the first n floats
+  alignas(32) inline constexpr int32_t masks[9][8] = {
+    { 0, 0, 0, 0, 0, 0, 0, 0},   // remainder 0 (unused)
+    {-1, 0, 0, 0, 0, 0, 0, 0},   // remainder 1
+    {-1,-1, 0, 0, 0, 0, 0, 0},   // remainder 2
+    {-1,-1,-1, 0, 0, 0, 0, 0},   // remainder 3
+    {-1,-1,-1,-1, 0, 0, 0, 0},   // remainder 4
+    {-1,-1,-1,-1,-1, 0, 0, 0},   // remainder 5
+    {-1,-1,-1,-1,-1,-1, 0, 0},   // remainder 6
+    {-1,-1,-1,-1,-1,-1,-1, 0},   // remainder 7
+    {-1,-1,-1,-1,-1,-1,-1,-1}    // remainder 4 complex elements (masks[rem<<1])
+  };
+
+  // Returns the mask for AVX512 masked loads/stores of the final partial
+  // register: the low n bits are set (0 <= n <= 16), so floats 0..n-1 are
+  // loaded/stored and the rest are skipped (maskz loads set them to 0)
+  __attribute__((__always_inline__))
+  constexpr __mmask16 mask16(const int n)
+  {
+    return static_cast<__mmask16>(0xffff >> (16 - n));
+  }
+
   //==================//
   // Helper Functions //
   //==================//
@@ -246,6 +253,31 @@ namespace EVM
     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
     #endif
   };
+
+  // Changes the lanes of an AVX register that msk does not select from 0.0f to
+  // 1.0f to avoid things like divide by 0 tripping FE_INVALID on unused
+  // elements (_mm256_maskload_ps sets unused elements to 0, this is intended
+  // to set the unused elements on the output of maskload to 1).  While
+  // division by 0 in the unused elements is not an error per-se, it would
+  // raise FE_INVALID (SIGFPE if FP exceptions are unmasked) even though values
+  // are never stored or used for output.  If a user or debugger is trapping
+  // that error it could potentially mask a true FE_INVALID error later in the
+  // program by triggering on these unused elements.  Note that this
+  // implementation deliberately does not use _mm256_blendv_ps as certain
+  // compilers (GCC 12) can expand that in AVX code to a branch per element
+  // resulting in significantly slower code.  While the current implementation
+  // avoids this branching, it only works for 0-valued elements.
+  //    in = loaded data to mask, replacing 0's with 1's
+  //    msk = mask to select which values are replaced with 1's, see
+  //         _mm256_maskload_ps for details
+  //    setUnusedToOne = input register with any 0-valued elements not selected
+  //        by msk set to 1.0f
+  __attribute__((__target__("avx"), __always_inline__))
+  inline __m256 setUnusedToOne(const __m256 in, const __m256i msk)
+  {
+    return _mm256_or_ps(in, _mm256_andnot_ps(_mm256_castsi256_ps(msk),
+        _mm256_set1_ps(1.0f)));
+  }
 
   //==============//
   // Vector Scale //
@@ -333,8 +365,12 @@ namespace EVM
   //===============//
   // Vector Divide //
   //===============//
-  // Point by point multiply of two input buffers.  The output buffer may be
+  // Point by point divide of two input buffers.  The output buffer may be
   // the same as one of the input buffers.  This version uses a true divide.
+  // Note that for complex divisors, AVX results are only reliable while |in2|
+  // is roughly between 1e-19 and 1.8e19 and |in1|·|in2| stays below 3.4e38.
+  // Outside that range the quotient can be 0, INF or NaN, especially when
+  // enableFastDenormals() has been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -349,11 +385,19 @@ namespace EVM
   inline void div(complex<float> const * const in1, float const * const in2,
       const int len, complex<float> * const out);
   
-  // Point by point multiply of two input buffers.  The output buffer may be
+  // Point by point divide of two input buffers.  The output buffer may be
   // the same as one of the input buffers.  This version uses a reciprocal
   // approximation with 1 Newton-Raphson stage for refinement to achieve an
   // answer comparable to true division for single precision float elements but
-  // with increased efficiency.
+  // with increased efficiency.  Note that due to the reciprocal approximation
+  // and Newton-Raphson stage, these methods may produce different results than
+  // normal division when the divisor is a special floating point value (0
+  // yields NaN rather than INF, INF yields NaN rather than 0, and subnormals
+  // may yield -+INF with the wrong sign).  Also note that for complex
+  // divisors, AVX results are only reliable while |in2| is roughly between
+  // 1e-19 and 9e18 and |in1|·|in2| stays below 3.4e38.  Outside that range
+  // the quotient can be 0, INF or NaN, especially when enableFastDenormals()
+  // has been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -368,11 +412,14 @@ namespace EVM
   inline void divnr(complex<float> const * const in1, float const * const in2,
       const int len, complex<float> * const out);
 
-  // Point by point multiply of two input buffers using a reciprocal
+  // Point by point divide of two input buffers using a reciprocal
   // approximation without Newton-Raphson refinement.  The output buffer may be
   // the same as one of the input buffers.  This version is more efficient than
   // the normal div() and divnr() functions but can have larger error from a
-  // true divide.
+  // true divide.   Note that for complex divisors, AVX results are only
+  // reliable while |in2| is roughly between 1e-19 and 9e18 and |in1|·|in2|
+  // stays below 3.4e38.  Outside that range the quotient can be 0, INF or NaN,
+  // especially when enableFastDenormals() has been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -389,7 +436,11 @@ namespace EVM
   
   // Point by point complex-conjugate divide of two input buffers, first
   // input conjugated.  The output buffer may be the same as one of the input
-  // buffers.  This version uses a true divide.
+  // buffers.  This version uses a true divide.  Note that for complex
+  // divisors, AVX results are only reliable while |in2| is roughly between
+  // 1e-19 and 1.8e19 and |in1|·|in2| stays below 3.4e38.  Outside that range
+  // the quotient can be 0, INF or NaN, especially when enableFastDenormals()
+  // has been called.
   //    in1 = first input buffer for divide (dividend), conjugated
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -401,7 +452,11 @@ namespace EVM
       const int len, complex<float> * const out);
   // Point by point complex-conjugate divide of two input buffers, second
   // input conjugated.  The output buffer may be the same as one of the input
-  // buffers. This version uses a true divide.
+  // buffers. This version uses a true divide.  Note that for complex divisors,
+  // AVX results are only reliable while |in2| is roughly between 1e-19 and
+  // 1.8e19 and |in1|·|in2| stays below 3.4e38.  Outside that range the
+  // quotient can be 0, INF or NaN, especially when enableFastDenormals() has
+  // been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor), conjugated
   //    len = number of elements to divide
@@ -416,7 +471,15 @@ namespace EVM
   // input conjugated. This version uses a reciprocal approximation with 1
   // Newton-Raphson stage for refinement to achieve an answer comparable to
   // true division for single precision float elements but with increased
-  // efficiency.
+  // efficiency.  Note that due to the reciprocal approximation and
+  // Newton-Raphson stage, these methods may produce different results than
+  // normal division when the divisor is a special floating point value (0
+  // yields NaN rather than INF, INF yields NaN rather than 0, and subnormals
+  // may yield -+INF with the wrong sign).  Also Note that for complex
+  // divisors, AVX results are only reliable while |in2| is roughly between
+  // 1e-19 and 9e18 and |in1|·|in2| stays below 3.4e38.  Outside that range
+  // the quotient can be 0, INF or NaN, especially when enableFastDenormals()
+  // has been called.
   //    in1 = first input buffer for divide (dividend), conjugated
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -430,7 +493,15 @@ namespace EVM
   // input conjugated.  This version uses a reciprocal approximation with 1
   // Newton-Raphson stage for refinement to achieve an answer comparable to
   // true division for single precision float elements but with increased
-  // efficiency.
+  // efficiency.  Note that due to the reciprocal approximation and
+  // Newton-Raphson stage, these methods may produce different results than
+  // normal division when the divisor is a special floating point value (0
+  // yields NaN rather than INF, INF yields NaN rather than 0, and subnormals
+  // may yield -+INF with the wrong sign).  Also note that for complex
+  // divisors, AVX results are only reliable while |in2| is roughly between
+  // 1e-19 and 9e18 and |in1|·|in2| stays below 3.4e38.  Outside that range
+  // the quotient can be 0, INF or NaN, especially when enableFastDenormals()
+  // has been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor), conjugated
   //    len = number of elements to divide
@@ -443,7 +514,10 @@ namespace EVM
 
   // Point by point complex-conjugate divide of two input buffers, first
   // input conjugated, using a reciprocal approximation without Newton-Raphson
-  // refinement.
+  // refinement.  Note that for complex divisors, AVX results are only reliable
+  // while |in2| is roughly between 1e-19 and 9e18 and |in1|·|in2| stays below
+  // 3.4e38.  Outside that range the quotient can be 0, INF or NaN, especially
+  // when enableFastDenormals() has been called.
   //    in1 = first input buffer for divide (dividend), conjugated
   //    in2 = second input buffer for divide (divisor)
   //    len = number of elements to divide
@@ -455,7 +529,10 @@ namespace EVM
       const int len, complex<float> * const out);
   // Point by point complex-conjugate divide of two input buffers, second
   // input conjugated, using a reciprocal approximation without Newton-Raphson
-  // refinement.
+  // refinement.  Note that for complex divisors, AVX results are only reliable
+  // while |in2| is roughly between 1e-19 and 9e18 and |in1|·|in2| stays below
+  // 3.4e38.  Outside that range the quotient can be 0, INF or NaN, especially
+  // when enableFastDenormals() has been called.
   //    in1 = first input buffer for divide (dividend)
   //    in2 = second input buffer for divide (divisor), conjugated
   //    len = number of elements to divide
@@ -582,7 +659,7 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld = _mm512_mul_ps(ld, sc);
       _mm512_mask_storeu_ps(&out[i], mk, ld);
@@ -647,7 +724,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
         &in1[i]));
       ld = _mm512_mul_ps(ld, sc);
@@ -722,23 +799,23 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_mul_ps(ld1, re);
       ld3 = _mm512_mul_ps(ld1, im);
       ld1 = _mm512_permutex2var_ps(ld2, p1, ld3);
       ld2 = _mm512_permutex2var_ps(ld2, p2, ld3);
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]),
-          MASK16(((rem-8)<<1)), ld2);
+          mask16((rem-8)<<1), ld2);
     }
     else if(rem)
     {
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_mul_ps(ld1, re);
       ld3 = _mm512_mul_ps(ld1, im);
       ld1 = _mm512_permutex2var_ps(ld2, p1, ld3);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]),
-          MASK16((rem<<1)), ld1);
+          mask16(rem<<1), ld1);
     }
     return;
   }
@@ -837,7 +914,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
         &in1[i]));
       ld2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
@@ -918,7 +995,7 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
       ld1 = _mm512_mul_ps(ld1, ld2);
@@ -989,7 +1066,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -1084,8 +1161,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -1099,8 +1176,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc = _mm512_permutexvar_ps(p1, ld1);
@@ -1267,7 +1344,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -1415,8 +1492,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -1432,8 +1509,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc = _mm512_permutexvar_ps(p1, ld1);
@@ -1615,7 +1692,7 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
       ld1 = _mm512_mul_ps(ld1, ld2);
@@ -1692,7 +1769,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -1792,8 +1869,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld1 = _mm512_mul_ps(ld1, sca);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
@@ -1808,8 +1885,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld1 = _mm512_mul_ps(ld1, sca);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
@@ -1985,7 +2062,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -2124,7 +2201,7 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
       ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
@@ -2156,6 +2233,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_div_ps(ld1, ld2);
       _mm256_maskstore_ps(&out[i], msk, ld1);
     }
@@ -2199,7 +2277,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -2253,6 +2331,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -2304,6 +2383,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
@@ -2375,8 +2455,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -2402,8 +2482,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -2469,6 +2549,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -2493,6 +2574,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -2556,6 +2638,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -2582,6 +2665,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -2633,27 +2717,27 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       ld2 = _mm512_div_ps(ld2, sc);
-      ld3 = _mm512_div_ps(ld3, ld1);
+      ld3 = _mm512_maskz_div_ps(mk, ld3, ld1);
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
           ld3);
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
       sc = _mm512_permutexvar_ps(p1, ld1);
-      ld2 = _mm512_div_ps(ld2, sc);
+      ld2 = _mm512_maskz_div_ps(mk, ld2, sc);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
     }
     return;
@@ -2689,6 +2773,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -2749,6 +2834,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -2818,10 +2904,10 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
-      inv = _mm512_rcp14_ps(ld2);             // old
+      inv = _mm512_maskz_rcp14_ps(mk, ld2);   // old
       ld2 = _mm512_fnmadd_ps(ld2, inv, two);  // 2-orig*old
       ld2 = _mm512_mul_ps(inv, ld2);          // old*(2-orig*old)
       ld1 = _mm512_mul_ps(ld1, ld2);
@@ -2861,6 +2947,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       inv = _mm256_rcp_ps(ld2);             // old
       ld2 = _mm256_fnmadd_ps(ld2, inv, two);  // 2-orig*old
       ld2 = _mm256_mul_ps(inv, ld2);          // old*(2-orig*old)
@@ -2902,6 +2989,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       inv = _mm256_rcp_ps(ld2);    // old
       ld2 = _mm256_mul_ps(ld2, inv); // orig*old
       ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
@@ -2955,7 +3043,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -2969,7 +3057,7 @@ namespace EVM
       ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
       ld2 = _mm512_add_ps(ld2, sh); // |B|^2
       // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      re = _mm512_rcp14_ps(ld2);    // inv
+      re = _mm512_maskz_rcp14_ps(mk, ld2);    // inv
       ld2 = _mm512_fnmadd_ps(ld2, re, two); // 2-orig*inv
       ld2 = _mm512_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
       ld1 = _mm512_mul_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
@@ -3019,6 +3107,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -3081,6 +3170,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
@@ -3167,8 +3257,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -3202,8 +3292,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -3284,6 +3374,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -3315,6 +3406,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -3394,6 +3486,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -3429,6 +3522,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -3491,13 +3585,13 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
       // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      sc = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
       ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
       sc = _mm512_permutexvar_ps(p1, ld1);
@@ -3510,12 +3604,12 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
       // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      sc = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
       ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
       sc = _mm512_permutexvar_ps(p1, ld1);
@@ -3561,6 +3655,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -3636,6 +3731,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -3708,10 +3804,10 @@ namespace EVM
     const int rem = len&15;
     if(rem)
     {
-      const __mmask16 mk = MASK16(rem);
+      const __mmask16 mk = mask16(rem);
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
       ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
-      ld2 = _mm512_rcp14_ps(ld2);
+      ld2 = _mm512_maskz_rcp14_ps(mk, ld2);
       ld1 = _mm512_mul_ps(ld1, ld2);
       _mm512_mask_storeu_ps(&out[i], mk, ld1);
     }
@@ -3741,6 +3837,7 @@ namespace EVM
       const __m256i msk = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_rcp_ps(ld2);
       ld1 = _mm256_mul_ps(ld1, ld2);
@@ -3787,7 +3884,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -3843,6 +3940,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -3896,6 +3994,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
@@ -3970,8 +4069,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -3999,8 +4098,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -4069,6 +4168,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -4095,6 +4195,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -4161,6 +4262,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4189,6 +4291,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4242,12 +4345,12 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
-      ld1 = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      ld1 = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
@@ -4258,11 +4361,11 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
-      ld1 = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      ld1 = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
@@ -4301,6 +4404,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4364,6 +4468,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4444,7 +4549,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -4505,6 +4610,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -4557,6 +4663,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -4619,8 +4726,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
@@ -4629,20 +4736,20 @@ namespace EVM
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       ld2 = _mm512_div_ps(ld2, sc);
-      ld3 = _mm512_div_ps(ld3, ld1);
+      ld3 = _mm512_maskz_div_ps(mk, ld3, ld1);
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
           ld3);
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
       sc = _mm512_permutexvar_ps(p1, ld1);
-      ld2 = _mm512_div_ps(ld2, sc);
+      ld2 = _mm512_maskz_div_ps(mk, ld2, sc);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
     }
     return;
@@ -4682,6 +4789,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4749,6 +4857,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4830,8 +4939,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -4853,8 +4962,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -4913,6 +5022,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -4935,6 +5045,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -4993,6 +5104,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -5017,6 +5129,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -5069,7 +5182,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -5123,6 +5236,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -5171,6 +5285,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -5239,7 +5354,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -5256,7 +5371,7 @@ namespace EVM
       ld1 = _mm512_fmsubadd_ps(re, ld1, im);// [Br0*Ar0-Bi0Ai0,-Br0*Ai0-Ar0*Bi0]
       ld2 = _mm512_add_ps(ld2, sh); // |B|^2
       // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      re = _mm512_rcp14_ps(ld2);    // inv
+      re = _mm512_maskz_rcp14_ps(mk, ld2);    // inv
       ld2 = _mm512_fnmadd_ps(ld2, re, two); // 2-orig*inv
       ld2 = _mm512_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
       // (conj(A)*conj(B))/|B|^2 == conj(A)/B
@@ -5310,6 +5425,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -5373,6 +5489,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -5447,13 +5564,13 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
       // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      sc = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
       ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
@@ -5468,12 +5585,12 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps (MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps (mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
       // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      sc = _mm512_maskz_rcp14_ps(MASK16(rem), ld1);
+      sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
       ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
@@ -5524,6 +5641,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -5606,6 +5724,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -5707,8 +5826,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -5737,8 +5856,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -5810,6 +5929,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -5839,6 +5959,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -5912,6 +6033,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -5945,6 +6067,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6009,7 +6132,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -6023,7 +6146,7 @@ namespace EVM
       ld1 = _mm512_fmaddsub_ps(re, ld1, im); // [Br0*Ar0-Bi0Ai0,Br0*Ai0+Ar0*Bi0]
       ld2 = _mm512_add_ps(ld2, sh); // |B|^2
       // compute 1/|B|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
-      re = _mm512_rcp14_ps(ld2);    // inv
+      re = _mm512_maskz_rcp14_ps(mk, ld2);    // inv
       ld2 = _mm512_fnmadd_ps(ld2, re, two); // 2-orig*inv
       ld2 = _mm512_mul_ps(re, ld2); // inv*(2-orig*inv) == 1/|B|^2
       ld1 = _mm512_maskz_mul_ps(mk, ld1, ld2);// (A*B)/|B|^2 == A/conj(B)
@@ -6073,6 +6196,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -6132,6 +6256,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -6200,7 +6325,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -6263,6 +6388,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -6317,6 +6443,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -6382,8 +6509,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i+8]));
@@ -6392,7 +6519,7 @@ namespace EVM
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       sc = _mm512_rcp14_ps(sc);
-      ld1 = _mm512_rcp14_ps(ld1);
+      ld1 = _mm512_maskz_rcp14_ps(mk, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
       ld3 = _mm512_mul_ps(ld3, ld1);
       _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld2);
@@ -6401,13 +6528,13 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in2[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in1[i]));
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
       sc = _mm512_permutexvar_ps(p1, ld1);
-      sc = _mm512_rcp14_ps(sc);
+      sc = _mm512_maskz_rcp14_ps(mk, sc);
       ld2 = _mm512_mul_ps(ld2, sc);
       _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld2);
     }
@@ -6450,6 +6577,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -6522,6 +6650,7 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -6609,8 +6738,8 @@ namespace EVM
     const int rem = len&15;
     if(rem>8) // if remainder is > 8, need 2 registers worth
     {
-      const __mmask16 mk = MASK16(((rem-8)<<1)); // 2 floats per complex
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i+8]));
@@ -6634,8 +6763,8 @@ namespace EVM
     }
     else if(rem)
     {
-      const __mmask16 mk = MASK16((rem<<1)); // 2 floats per complex 
-      ld1 = _mm512_maskz_loadu_ps(MASK16(rem), &in1[i]);
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex 
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const * const>(&in2[i]));
       sc1 = _mm512_permutexvar_ps(p1, ld1);
@@ -6697,6 +6826,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -6721,6 +6851,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -6782,6 +6913,7 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
+        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6808,6 +6940,7 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
+        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6862,7 +6995,7 @@ namespace EVM
     if(rem)
     {
       // each complex is 2 floats, so double rem
-      const __mmask16 mk = MASK16((rem<<1));
+      const __mmask16 mk = mask16(rem<<1);
       ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
           &in1[i])); // A
       ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
@@ -6918,6 +7051,7 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -6968,6 +7102,7 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
+      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
