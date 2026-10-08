@@ -136,13 +136,42 @@
 //    tune = tunes complex data with a numerically controlled oscillator (NCO)
 //    fs2Shift = Fs/2 frequency shift for complex data
 //
+//  Important Compiler-dependent notes (most users will not care about this,
+//  but here it is anyway):
+//    1. FP exceptions: for speed, the AVX and AVX2 division methods load the
+//       final partial register with zeros in the unused elements and divide
+//       them anyway (0/0, or 0*rcp(0)), which raises FE_INVALID (SIGFPE if FP
+//       exceptions are unmasked) and may raise FE_DIVBYZERO even on valid
+//       input.  Those elements are never stored, so results are unaffected;
+//       this only matters to code that tests or traps FP exceptions.  The
+//       AVX-512 versions use masked instructions that skip the unused elements
+//       when built with GCC, but icpx's default floating-point model computes
+//       them anyway, so with icpx they can raise FE_INVALID as well (icpx's
+//       strict model, which would prevent this, cannot be combined with the
+//       target-attribute dispatch used here).  Applying setUnusedToOne() to
+//       the divisor avoids it at the cost of 2 extra instructions per call
+//       with a partial register.
+//    2. Complex conj(),*,/ operators: icpx 2026.1 does not emit the
+//       std::complex<float>(re, im) constructor when it is only used from
+//       target()-versioned functions, which leaves an undefined reference at
+//       link time.  conj() and arithmetic between a float and a complex both
+//       use that constructor, so the non-SIMD ("default") versions that would
+//       need it either expand the the computation out with .real()/.imag() or
+//       copy a constexpr complex (built at compile time) and set its real()
+//       and imag() parts from the inputs.  The division methods do not use
+//       expanded computations as this would result in the same range
+//       restrictions as the SIMD paths (i.e. very large or very small inputs
+//       yielding NaN), and the intent of the default methods is to give exact
+//       performance to the native / operator at the expense of speed.
+//
 //==============================================================================
 #ifndef EFFICIENT_VECTOR_MATH_H
 #define EFFICIENT_VECTOR_MATH_H
 
 #include <math.h>
 #include <complex.h>
-#include <string.h>
+#include <string>
+#include <cstring>   // for memcpy/memset
 #include <algorithm> // for std::min
 #include <complex>
 #include <type_traits> // for static_assert type checking
@@ -234,8 +263,12 @@ namespace EVM
   template<typename T>
   inline size_t getSize(const size_t desired);
   
-  // Returns the highest optimization level as a string
+  // Returns the highest optimization level as a string, note that in order to
+  // output a string, this must be a wrapper around a const char* method as
+  // the intel compiler (based on LLVM) doesn't instantiate the std::string
+  // constructor when multiversioning is used
   //    EVM::getOptLevel = string representation of highest optimization level
+  inline const char* getOptLevelRaw();
   inline std::string getOptLevel();
 
   // Enables fast denormals (floating point numbers very close to 0) by
@@ -266,7 +299,9 @@ namespace EVM
   // implementation deliberately does not use _mm256_blendv_ps as certain
   // compilers (GCC 12) can expand that in AVX code to a branch per element
   // resulting in significantly slower code.  While the current implementation
-  // avoids this branching, it only works for 0-valued elements.
+  // avoids this branching, it only works for 0-valued elements.  Currently
+  // unused: the division methods skip it for speed (see note 1 at the top of
+  // this file), it is kept for code where FE_INVALID-clean tails matter.
   //    in = loaded data to mask, replacing 0's with 1's
   //    msk = mask to select which values are replaced with 1's, see
   //         _mm256_maskload_ps for details
@@ -598,44 +633,48 @@ namespace EVM
   }
   
   // Returns the highest optimization level as a string, only provide
-  // implementation for each target if it wasn't explicitly disabled
+  // implementation for each target if it wasn't explicitly disabled,
+  // note this must return a char* vs. a string due to a quirk of the intel
+  // compiler which will not instantiate string inside of multiversioning
   #if !defined(DISABLE_AVX512)
   __attribute__((__target__("avx512f")))
-  inline std::string getOptLevel() {return std::string("AVX512");}
+  inline const char* getOptLevelRaw() {return "AVX512";}
   #endif
   #if !defined(DISABLE_AVX2)
   __attribute__((__target__("avx2")))
-  inline std::string getOptLevel() {return std::string("AVX2");}
+  inline const char* getOptLevelRaw() {return "AVX2";}
   #endif
   #if !defined(DISABLE_AVX)
   __attribute__((__target__("avx")))
-  inline std::string getOptLevel() {return std::string("AVX");}
+  inline const char* getOptLevelRaw() {return "AVX";}
   #endif
   #if !defined(DISABLE_SSE4)
   __attribute__((__target__("sse4.2")))
-  inline std::string getOptLevel() {return std::string("SSE4.2");}
+  inline const char* getOptLevelRaw() {return "SSE4.2";}
   __attribute__((__target__("sse4.1")))
-  inline std::string getOptLevel() {return std::string("SSE4.1");}
+  inline const char* getOptLevelRaw() {return "SSE4.1";}
   #endif
   #if !defined(DISABLE_SSSE3)
   __attribute__((__target__("ssse3")))
-  inline std::string getOptLevel() {return std::string("SSSE3");}
+  inline const char* getOptLevelRaw() {return "SSSE3";}
   #endif
   #if !defined(DISABLE_SSE3)
   __attribute__((__target__("sse3")))
-  inline std::string getOptLevel() {return std::string("SSE3");}
+  inline const char* getOptLevelRaw() {return "SSE3";}
   #endif
   #if !defined(DISABLE_SSE2)
   __attribute__((__target__("sse2")))
-  inline std::string getOptLevel() {return std::string("SSE2");}
+  inline const char* getOptLevelRaw() {return "SSE2";}
   #endif
   #if !defined(DISABLE_SSE)
   __attribute__((__target__("sse")))
-  inline std::string getOptLevel() {return std::string("SSE");}
+  inline const char* getOptLevelRaw() {return "SSE";}
   #endif
   __attribute__((__target__("default")))
-  inline std::string getOptLevel() {return std::string("SIMD Disabled");}
+  inline const char* getOptLevelRaw() {return "SIMD Disabled";}
 
+  inline std::string getOptLevel() {return std::string(getOptLevelRaw());}
+  
   //======================================//
   // Vector Scale Function Implementation //
   //======================================//
@@ -1452,7 +1491,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]*conj(in2[i]);
+    // written out rather than in1[i]*conj(in2[i]), see the icpx note above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = in1[i].real()*in2[i].real() +
+          in1[i].imag()*in2[i].imag();
+      const float im = in1[i].imag()*in2[i].real() -
+          in1[i].real()*in2[i].imag();
+      out[i].real(re);
+      out[i].imag(im);
+    }
     return;
   }
   
@@ -1663,7 +1711,14 @@ namespace EVM
   inline void multc(float const * const in1, complex<float> const * const in2,
     const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]*conj(in2[i]);
+    // written out rather than in1[i]*conj(in2[i]), see the icpx note above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = in1[i]*in2[i].real();
+      const float im = -in1[i]*in2[i].imag();
+      out[i].real(re);
+      out[i].imag(im);
+    }
     return;
   }
   
@@ -2175,7 +2230,17 @@ namespace EVM
       complex<float> const * const in2, const int len, const float scale,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]*conj(in2[i])*scale;
+    // written out rather than in1[i]*conj(in2[i])*scale, see the icpx note
+    // above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = (in1[i].real()*in2[i].real() +
+          in1[i].imag()*in2[i].imag())*scale;
+      const float im = (in1[i].imag()*in2[i].real() -
+          in1[i].real()*in2[i].imag())*scale;
+      out[i].real(re);
+      out[i].imag(im);
+    }
   }
 
   //=======================================//
@@ -2233,7 +2298,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_div_ps(ld1, ld2);
       _mm256_maskstore_ps(&out[i], msk, ld1);
     }
@@ -2255,44 +2319,106 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
-    __m512 ld1, ld2, sh, re, im;
+    const int rem = len&15; // remaining elements (note len&15 == len%16)
+    __m512 ld1, ld2, ld3, ld4, sh, re, im, rc;
     int i = 0;
-    for(; i<len-7; i+=8) // process 8 complex elements per register
+    // note: we process 2 registers worth of complex elements at once as the
+    // divide is the heaviest operation, and operating on 2 registers at once
+    // can be done with a single divide instead of 2
+    if(len > 8)
     {
-      ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
-      ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
-      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
-      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
-      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
-      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
-      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm512_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+      const __m512 one = _mm512_set1_ps(1.0f);
+      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+      {
+        // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i+8]));
+        ld4 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i+8]));
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm512_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm512_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        im = _mm512_mul_ps(im,im); // [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm512_fmadd_ps(re,re,im); // [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm512_div_ps(one,rc); // [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // compute complex numerator A*conj(B)
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm512_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm512_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm512_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm512_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm512_fmsubadd_ps(re, ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm512_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm512_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm512_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm512_mul_ps(ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), ld3);
+      }
+      if(rem > 8) // one full and one partial register
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+         // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+            &in1[i+8]));
+        ld4 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+            &in2[i]+8));
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm512_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm512_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        im = _mm512_mul_ps(im,im); // [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm512_fmadd_ps(re,re,im); // [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm512_div_ps(one,rc); // [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // compute complex numerator A*conj(B)
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm512_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm512_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm512_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm512_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm512_fmsubadd_ps(re, ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm512_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm512_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm512_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm512_maskz_mul_ps(mk, ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm512_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i+8]), mk,
+            ld3);
+        return;
+      }
+      else if(!rem) return;
     }
-    // handle remaining elements (note len&7 == len%8)
-    const int rem = len&7;
-    if(rem)
-    {
-      // each complex is 2 floats, so double rem
-      const __mmask16 mk = mask16(rem<<1);
-      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
-          &in1[i])); // A
-      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
-          &in2[i])); // B
-      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
-      im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
-      re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
-      ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
-      im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
-      sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
-      ld2 = _mm512_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
-    }
+    // if we got here, there is one partial register left to complete
+    // each complex is 2 floats, so double rem
+    const __mmask16 mk = mask16(rem<<1);
+     // load A and B and compute A/B
+    ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+        &in1[i])); // A
+    ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const * const>(
+        &in2[i])); // B
+    sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+    im = _mm512_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+    re = _mm512_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+    ld2 = _mm512_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+    im = _mm512_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+    sh = _mm512_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+    ld1 = _mm512_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+    ld2 = _mm512_add_ps(ld2, sh); // |B|^2
+    ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+    _mm512_mask_storeu_ps(reinterpret_cast<float * const>(&out[i]), mk, ld1);
     return;
   }
   #endif // AVX512 complex / complex
@@ -2303,46 +2429,108 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
-    __m256 ld1, ld2, sh, re, im;
+    const int rem = len&7; // remaining elements (note len&7 == len%8)
+    __m256 ld1, ld2, ld3, ld4, sh, re, im, rc;
     int i = 0;
-    for(; i<len-3; i+=4) // process 4 complex elements per register
+    // note: we process 2 registers worth of complex elements at once as the
+    // divide is the heaviest operation, and operating on 2 registers at once
+    // can be done with a single divide instead of 2
+    if(len > 4)
     {
-      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
-      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
-      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
-      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
-      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
-      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+      const __m256 one = _mm256_set1_ps(1.0f);
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+        ld4 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm256_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm256_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        im = _mm256_mul_ps(im,im); // [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm256_fmadd_ps(re,re,im); // [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm256_div_ps(one,rc); // [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // compute complex numerator A*conj(B)
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm256_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm256_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm256_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm256_fmsubadd_ps(re, ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm256_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm256_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm256_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm256_mul_ps(ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+      }
+      if(rem > 4) // one full and one partial register
+      {
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk);
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk);
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm256_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm256_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        im = _mm256_mul_ps(im,im); // [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm256_fmadd_ps(re,re,im); // [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm256_div_ps(one,rc); // [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // compute complex numerator A*conj(B)
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm256_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm256_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm256_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm256_fmsubadd_ps(re, ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm256_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm256_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm256_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm256_mul_ps(ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk,
+            ld3);
+        return;
+      }
+      else if(!rem) return;
     }
-    // handle remaining elements (note len&3 == len%4)
-    const int rem = len&3;
-    if(rem)
-    {
-      // 2 floats per complex, so double rem for mask
-      const __m256i msk = _mm256_load_si256(
-          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
-      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
-          msk);
-      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
-          msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
-      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
-      im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
-      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
-      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
-    }
+    // if we got here, there is one partial register left to complete
+    // each complex is 2 floats, so double rem
+    const __m256i msk = _mm256_load_si256(
+        reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+    // load A and B and compute A/B
+    ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+        &in1[i]), msk); // A
+    ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+        &in2[i]), msk); // B
+    sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+    im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+    re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+    ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+    im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+    sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+    ld1 = _mm256_fmsubadd_ps(re, ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+    ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+    ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+    _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     return;
   }
   #endif // end AVX2 complex / complex
@@ -2353,52 +2541,124 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
-    __m256 ld1, ld2, sh, re, im;
+    const int rem = len&7; // remaining elements (note len&7 == len%8)
+    __m256 ld1, ld2, ld3, ld4, sh, re, im, rc;
     const __m256 neg = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f,
         0.0f, -0.0f);
     int i = 0;
-    for(; i<len-3; i+=4) // process 4 complex elements per register
+    // note: we process 2 registers worth of complex elements at once as the
+    // divide is the heaviest operation, and operating on 2 registers at once
+    // can be done with a single divide instead of 2
+    if(len > 4)
     {
-      ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));// B
-      ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));// A
-      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
-      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
-      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
-      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
-      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
-      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+      const __m256 one = _mm256_set1_ps(1.0f);
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i+4]));
+        ld4 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i+4]));
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm256_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm256_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        re = _mm256_mul_ps(re, re);// [Br0^2,Br1^2,Dr0^2,Dr1^2,...]
+        im = _mm256_mul_ps(im, im);// [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm256_add_ps(re, im);// [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm256_div_ps(one,rc);// [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // conjugate B and D
+        ld2 = _mm256_xor_ps(ld2, neg);
+        ld4 = _mm256_xor_ps(ld4, neg);
+        // compute complex numerator A*conj(B)
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm256_mul_ps(ld1, re);
+        ld1 = _mm256_addsub_ps(ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm256_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm256_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm256_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm256_mul_ps(ld3, re);
+        ld3 = _mm256_addsub_ps(ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm256_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm256_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm256_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm256_mul_ps(ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i+4]), ld3);
+      }
+      if(rem > 4) // one full and one partial register
+      {
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const * const>(masks[(rem-4)<<1]));
+        // load A, B, C, and D, and compute A/B and C/D
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in1[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in1[i+4]), msk);
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+            &in2[i+4]), msk);
+        // compute 1/|B|^2 and 1/|D|^2 and compress into 1 register
+        re = _mm256_shuffle_ps(ld2,ld4,0x88); // [Br0,Br1,Dr0,Dr1,...]
+        im = _mm256_shuffle_ps(ld2,ld4,0xdd); // [Bi0,Bi1,Di0,Di1,...]
+        re = _mm256_mul_ps(re, re);// [Br0^2,Br1^2,Dr0^2,Dr1^2,...]
+        im = _mm256_mul_ps(im, im);// [Bi0^2,Bi1^2,Di0^2,Di1^2,...]
+        rc = _mm256_add_ps(re, im);// [|B0|^2,|B1|^2,|D0|^2,|D1|^2,...]
+        rc = _mm256_div_ps(one,rc);// [1/|B0|^2,1/|B1|^2,1/|D0|^2,1/|D1|^2,...]
+        // conjugate B and D
+        ld2 = _mm256_xor_ps(ld2, neg);
+        ld4 = _mm256_xor_ps(ld4, neg);
+        // compute complex numerator A*conj(B)
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+        im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld1 = _mm256_mul_ps(ld1, re);
+        ld1 = _mm256_addsub_ps(ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+        // compute the complex numerator C*conj(D)
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1); // [Ci0,Cr0,Ci1,Cr1,...,Ci7,Cr7]
+        im = _mm256_movehdup_ps(ld4); // [Di0,Di0,Di1,Di1,...,Di7,Di7]
+        re = _mm256_moveldup_ps(ld4); // [Dr0,Dr0,Dr1,Dr1,...,Dr7,Dr7]
+        im = _mm256_mul_ps(sh, im);   // [Ci0*Di0,Cr0*Di0,...,Ci7*Di7,Cr7*Di7]
+        ld3 = _mm256_mul_ps(ld3, re);
+        ld3 = _mm256_addsub_ps(ld3, im); // [Dr0*Cr0+Di0Ci0,Dr0*Ci0-Cr0*Di0]
+        // spread reciprocals into 2 registers and scale the numerators
+        sh = _mm256_unpacklo_ps(rc, rc); // [1/|B0|^2,1/|B0|^2,1/|B1|^2,...]
+        rc = _mm256_unpackhi_ps(rc, rc); // [1/|D0|^2,1/|D0|^2,1/|D1|^2,...]
+        ld1 = _mm256_mul_ps(ld1, sh); // (A*conj(B))/|B|^2 == A/B
+        ld3 = _mm256_mul_ps(ld3, rc); // (C*conj(D))/|D|^2 == C/D
+        _mm256_storeu_ps(reinterpret_cast<float * const>(&out[i]), ld1);
+        _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i+4]), msk,
+            ld3);
+        return;
+      }
+      else if(!rem) return;
     }
-    // handle remaining elements (note len&3 == len%4)
-    const int rem = len&3;
-    if(rem)
-    {
-      // 2 floats per complex, so double rem for mask
-      const __m256i msk = _mm256_load_si256(
-          reinterpret_cast<__m256i const * const>(masks[rem<<1]));
-      ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
-          msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
-      ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
-          msk);
-      ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
-      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
-      im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
-      re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
-      ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br3)^2,(Bi3)^2]
-      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
-      ld1 = _mm256_mul_ps(ld1, re); // [Ar0*Br0,Ai0*Br0,...,Ar3*Br3,Ai3*Br3]
-      sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
-      ld1 = _mm256_addsub_ps(ld1, im);// [Ar0*Br0-Ai0*Bi0,Ai0*Br0+Ar0*Bi0]
-      ld2 = _mm256_add_ps(ld2, sh); // |B|^2
-      ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
-      _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
-    }
+    // if we got here, there is one partial register left to complete
+    // each complex is 2 floats, so double rem
+    const __m256i msk = _mm256_load_si256(
+        reinterpret_cast<__m256i const * const>(masks[rem<<1]));
+    // load A and B and compute A/B
+    ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+        &in1[i]), msk); // A
+    ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
+        &in2[i]), msk); // B
+    ld2 = _mm256_xor_ps(ld2, neg); // conj(B)
+    sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+    im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+    re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+    ld2 = _mm256_mul_ps(ld2, ld2);// [(Br0)^2,(Bi0)^2,...,(Br7)^2,(Bi7)^2]
+    im = _mm256_mul_ps(sh, im);   // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+    ld1 = _mm256_mul_ps(ld1, re);
+    ld1 = _mm256_addsub_ps(ld1, im); // [Br0*Ar0+Bi0Ai0,Br0*Ai0-Ar0*Bi0]
+    sh = _mm256_shuffle_ps(ld2, ld2, 0xb1);// [(Bi0)^2,(Br0)^2,...]
+    ld2 = _mm256_add_ps(ld2, sh); // |B|^2
+    ld1 = _mm256_div_ps(ld1, ld2);// (A*conj(B))/|B|^2 == A/B
+    _mm256_maskstore_ps(reinterpret_cast<float * const>(&out[i]), msk, ld1);
     return;
   }
   #endif // end AVX complex / complex
@@ -2549,7 +2809,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -2574,7 +2833,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -2638,7 +2896,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -2665,7 +2922,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -2686,7 +2942,15 @@ namespace EVM
   inline void div(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+    // complex(in1[i], 0) without the complex<float>(re, im) constructor, see
+    // the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      out[i] = a/in2[i];
+    }
   }
 
   // complex / real
@@ -2773,7 +3037,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -2834,7 +3097,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -2947,7 +3209,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       inv = _mm256_rcp_ps(ld2);             // old
       ld2 = _mm256_fnmadd_ps(ld2, inv, two);  // 2-orig*old
       ld2 = _mm256_mul_ps(inv, ld2);          // old*(2-orig*old)
@@ -2989,7 +3250,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_maskload_ps(&in2[i], msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       inv = _mm256_rcp_ps(ld2);    // old
       ld2 = _mm256_mul_ps(ld2, inv); // orig*old
       ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
@@ -3107,7 +3367,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -3170,7 +3429,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
@@ -3374,7 +3632,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -3406,7 +3663,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -3486,7 +3742,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -3522,7 +3777,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -3548,7 +3802,15 @@ namespace EVM
   inline void divnr(float const * const in1, complex<float> const * const in2,
     const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+    // complex(in1[i], 0) without the complex<float>(re, im) constructor, see
+    // the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      out[i] = a/in2[i];
+    }
   }
 
   // complex / real using reciprocal approximation and 1 stage Newton-Raphson
@@ -3655,7 +3917,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -3731,7 +3992,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -3837,7 +4097,6 @@ namespace EVM
       const __m256i msk = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld2 = _mm256_maskload_ps(&in2[i], msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(&in1[i], msk);
       ld2 = _mm256_rcp_ps(ld2);
       ld1 = _mm256_mul_ps(ld1, ld2);
@@ -3940,7 +4199,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -3994,7 +4252,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       ld2 = _mm256_xor_ps(ld2, neg);// conj(B)
@@ -4168,7 +4425,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
@@ -4195,7 +4451,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         sc1 = _mm256_xor_ps(sc1, neg);  // negate every other element
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -4262,7 +4517,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4291,7 +4545,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4313,7 +4566,15 @@ namespace EVM
   inline void divr(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/in2[i];
+    // complex(in1[i], 0) without the complex<float>(re, im) constructor, see
+    // the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      out[i] = a/in2[i];
+    }
   }
   
   // complex / real using reciprocal approximation
@@ -4404,7 +4665,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4468,7 +4728,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4610,7 +4869,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -4663,7 +4921,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -4687,7 +4944,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // conj(in1[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i].real());
+      a.imag(-in1[i].imag()); // conj(in1[i])
+      out[i] = a/in2[i];
+    }
   }
   
   // complex conjugate / real
@@ -4789,7 +5055,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4857,7 +5122,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -4899,7 +5163,14 @@ namespace EVM
   inline void divc1(complex<float> const * const in1, float const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // written out rather than conj(in1[i])/in2[i], see the icpx note above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = in1[i].real()/in2[i];
+      const float im = -in1[i].imag()/in2[i];
+      out[i].real(re);
+      out[i].imag(im);
+    }
   }
   
   // real / complex conjugate
@@ -5022,7 +5293,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -5045,7 +5315,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -5104,7 +5373,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -5129,7 +5397,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -5149,7 +5416,18 @@ namespace EVM
   inline void divc2(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // complex(in1[i], 0) and conj(in2[i]) without the complex<float>(re, im)
+    // constructor, see the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = a/b;
+    }
   }
 
   // complex / complex conjugate
@@ -5236,7 +5514,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -5285,7 +5562,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -5308,7 +5584,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // conj(in2[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = in1[i]/b;
+    }
   }
   
   // complex conjugate / complex using reciprocal approximation
@@ -5425,7 +5710,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -5489,7 +5773,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -5518,7 +5801,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // conj(in1[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i].real());
+      a.imag(-in1[i].imag()); // conj(in1[i])
+      out[i] = a/in2[i];
+    }
   }
 
   // complex conjugate / real using reciprocal approximation and 1 stage
@@ -5641,7 +5933,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -5724,7 +6015,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -5776,7 +6066,14 @@ namespace EVM
   inline void divc1nr(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // written out rather than conj(in1[i])/in2[i], see the icpx note above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = in1[i].real()/in2[i];
+      const float im = -in1[i].imag()/in2[i];
+      out[i].real(re);
+      out[i].imag(im);
+    }
   }
   
   // real / complex conjugate using reciprocal approximation and 1 stage of
@@ -5929,7 +6226,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -5959,7 +6255,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -6033,7 +6328,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6067,7 +6361,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6092,7 +6385,18 @@ namespace EVM
   inline void divc2nr(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // complex(in1[i], 0) and conj(in2[i]) without the complex<float>(re, im)
+    // constructor, see the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = a/b;
+    }
   }
 
   // complex / complex conjugate using reciprocal approximation with 1 stage of
@@ -6196,7 +6500,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -6256,7 +6559,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -6284,7 +6586,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // conj(in2[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = in1[i]/b;
+    }
   }
 
   // complex conjugate / complex using reciprocal approximation
@@ -6388,7 +6699,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_xor_ps(ld1, neg);// conj(A)
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -6443,7 +6753,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -6468,7 +6777,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // conj(in1[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i].real());
+      a.imag(-in1[i].imag()); // conj(in1[i])
+      out[i] = a/in2[i];
+    }
   }
 
   // complex conjugate / real using reciprocal approximation
@@ -6577,7 +6895,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -6650,7 +6967,6 @@ namespace EVM
       const __m256i msk1 = _mm256_load_si256(
           reinterpret_cast<__m256i const * const>(masks[rem]));
       ld1 = _mm256_maskload_ps(&in2[i], msk1);
-      ld1 = setUnusedToOne(ld1, msk1); // avoid 0/0 in unused lanes
       if(rem>4) // if remainder is > 4, need 2 registers worth
       {
         const __m256i msk2 = _mm256_load_si256(
@@ -6695,7 +7011,14 @@ namespace EVM
   inline void divc1r(complex<float> const * const in1, float const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = conj(in1[i])/in2[i];
+    // written out rather than conj(in1[i])/in2[i], see the icpx note above
+    for(int i=0; i<len; ++i)
+    {
+      const float re = in1[i].real()/in2[i];
+      const float im = -in1[i].imag()/in2[i];
+      out[i].real(re);
+      out[i].imag(im);
+    }
   }
   
 
@@ -6826,7 +7149,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);  // repeat first 4 reals
         sc2 = _mm256_permutevar8x32_ps(ld1, p2);  // repeat last 4 reals
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
@@ -6851,7 +7173,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc1 = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_mul_ps(ld2, ld2);  // in2[i]^2
         ld2 = _mm256_mul_ps(ld2, sc1);  // in1 * conj(in2[i])
@@ -6913,7 +7234,6 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const * const>(&in2[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const * const>(
             &in2[i+4]), msk2);
-        ld3 = setUnusedToOne(ld3, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6940,7 +7260,6 @@ namespace EVM
             reinterpret_cast<__m256i const * const>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
             msk2);
-        ld2 = setUnusedToOne(ld2, msk2); // avoid 0/0 in unused lanes
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6961,7 +7280,18 @@ namespace EVM
   inline void divc2r(float const * const in1, complex<float> const * const in2,
       const int len, complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // complex(in1[i], 0) and conj(in2[i]) without the complex<float>(re, im)
+    // constructor, see the icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> a = zero; // imaginary part stays 0
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      a.real(in1[i]);
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = a/b;
+    }
   }
 
   // complex / complex conjugate using reciprocal approximation
@@ -7051,7 +7381,6 @@ namespace EVM
           msk);
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
       im = _mm256_movehdup_ps(ld2); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
       re = _mm256_moveldup_ps(ld2); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
@@ -7102,7 +7431,6 @@ namespace EVM
           reinterpret_cast<__m256i const * const>(masks[rem<<1]));
       ld2 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in2[i]),
           msk);
-      ld2 = setUnusedToOne(ld2, msk); // avoid 0/0 in unused lanes
       ld1 = _mm256_maskload_ps(reinterpret_cast<float const * const>(&in1[i]),
           msk);
       sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
@@ -7126,7 +7454,16 @@ namespace EVM
       complex<float> const * const in2, const int len,
       complex<float> * const out)
   {
-    for(int i=0; i<len; ++i) out[i] = in1[i]/conj(in2[i]);
+    // conj(in2[i]) without the complex<float>(re, im) constructor, see the
+    // icpx note above
+    static constexpr complex<float> zero(0.0f, 0.0f);
+    complex<float> b = zero;
+    for(int i=0; i<len; ++i)
+    {
+      b.real(in2[i].real());
+      b.imag(-in2[i].imag()); // conj(in2[i])
+      out[i] = in1[i]/b;
+    }
   }
 
   //=====================================//
