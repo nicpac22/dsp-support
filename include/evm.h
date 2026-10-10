@@ -215,9 +215,6 @@
 #define DISABLE_SSE
 #endif // DISABLE_SIMD
 
-using std::vector;
-using std::complex;
-
 // for memory allocation and register size, start with largest and work down
 // to smallest, as long as an instruction set is not explicitly disabled,
 // assume it can/will be used (i.e. account for worst-case alignment and size)
@@ -240,14 +237,16 @@ using std::complex;
 // define some aliases for using memory aligned allocators based on the SIMD
 // registers being used
 #ifndef ALIGNED_VECTOR
-#define ALIGNED_VECTOR(type) vector<type, aligned_allocator<type, evm_align> >
+#define ALIGNED_VECTOR(type) std::vector<type, aligned_allocator<type, evm_align> >
 #endif
 #ifndef ALIGNED_ITERATOR
-#define ALIGNED_ITERATOR(type) vector<type, aligned_allocator<type, evm_align> >::iterator
+#define ALIGNED_ITERATOR(type) std::vector<type, aligned_allocator<type, evm_align> >::iterator
 #endif
 
 namespace EVM
 {
+  using std::complex;
+  
   // mask table for the final partial register of the AVX/AVX2 kernels, rows
   // can be cast as __m256i* directly and row n selects the first n floats
   alignas(32) inline constexpr int32_t masks[9][8] = {
@@ -347,8 +346,6 @@ namespace EVM
   //    scaleFactor = scale factor to apply to in1
   //    len = number of elements to scale
   //    out = output buffer, product of in1*scaleFactor
-  //    overindex_on_read = whether or not input buffers can be over-indexed
-  //        when loading into SIMD registers
   inline void scale(float const * const in1, const float scaleFactor,
       const int len, float * const out);
   inline void scale(complex<float> const * const in1, const float scaleFactor,
@@ -363,8 +360,6 @@ namespace EVM
   //    in2 = second input buffer for multiply
   //    len = number of elements to multiply
   //    out = output buffer to recieve result of in1*in2
-  //    overindex_on_read = whether or not input buffers can be over-indexed
-  //        when loading into SIMD registers
   inline void mult(float const * const in1, float const * const in2,
       const int len, float * const out);
   inline void mult(complex<float> const * const in1,
@@ -380,8 +375,6 @@ namespace EVM
   //    in2 = second input buffer for multiply, conjugated
   //    len = number of elements to multiply
   //    out = output buffer to recieve result of complex multiply
-  //    overindex_on_read = whether or not input buffers can be over-indexed
-  //        when loading into SIMD registers
   inline void multc(complex<float> const * const in1,
       complex<float> const * const in2, const int len,
       complex<float> * const out);
@@ -398,8 +391,6 @@ namespace EVM
   //    len = number of elements to multiply
   //    scale = scale factor
   //    out = output buffer to recieve result of complex multiply
-  //    overindex_on_read = whether or not input buffers can be over-indexed
-  //        when loading into SIMD registers
   inline void mults(float const * const in1, float const * const in2,
       const int len, const float scale, float * const out);
   inline void mults(complex<float> const * const in1,
@@ -415,8 +406,6 @@ namespace EVM
   //    len = number of elements to multiply
   //    scale = scale factor
   //    out = output buffer to recieve result of complex multiply
-  //    overindex_on_read = whether or not input buffers can be over-indexed
-  //        when loading into SIMD registers
   inline void multcs(complex<float> const * const in1,
       complex<float> const * const in2, const int len, const float scale,
       complex<float> * const out);
@@ -4153,10 +4142,10 @@ namespace EVM
       ld1 = _mm512_loadu_ps(&in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_rcp14_ps(ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
@@ -4173,10 +4162,10 @@ namespace EVM
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const *>(&in1[i+8]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld1 = _mm512_permutexvar_ps(p2, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
@@ -4191,10 +4180,10 @@ namespace EVM
       ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const *>(&in1[i]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
       _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld2);
@@ -4219,10 +4208,10 @@ namespace EVM
       ld1 = _mm256_loadu_ps(&in2[i]);
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm256_rcp_ps(ld1);
       ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       sc = _mm256_permutevar8x32_ps(ld1, p1);
       ld1 = _mm256_permutevar8x32_ps(ld1, p2);
       ld2 = _mm256_mul_ps(ld2, sc);
@@ -4245,10 +4234,10 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
             &in1[i+4]), msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc = _mm256_rcp_ps(ld1);
         ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
         sc = _mm256_permutevar8x32_ps(ld1, p1);
         ld1 = _mm256_permutevar8x32_ps(ld1, p2);
         ld2 = _mm256_mul_ps(ld2, sc);
@@ -4263,10 +4252,10 @@ namespace EVM
             reinterpret_cast<__m256i const *>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
             msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc = _mm256_rcp_ps(ld1);
         ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
         sc = _mm256_permutevar8x32_ps(ld1, p1);
         ld2 = _mm256_mul_ps(ld2, sc);
         _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
@@ -4291,11 +4280,11 @@ namespace EVM
       ld1 = _mm256_loadu_ps(&in2[i]);
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc1 = _mm256_rcp_ps(ld1);    // inv
       ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
       ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-      ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
       sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
       ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
       sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4320,11 +4309,11 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
             &in1[i+4]), msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc1 = _mm256_rcp_ps(ld1);    // inv
         ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
         ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -4341,11 +4330,11 @@ namespace EVM
             reinterpret_cast<__m256i const *>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
             msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc1 = _mm256_rcp_ps(ld1);    // inv
         ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
         ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
         sc1 = _mm256_permute2f128_ps(sc2, ld1, 0x20); // [0,0,1,1,2,2,3,3]
@@ -6910,10 +6899,10 @@ namespace EVM
       ld1 = _mm512_loadu_ps(&in2[i]);
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_rcp14_ps(ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       // negate every other element, note the casting is done to avoid requiring
       // the AVX512DQ instruction _mm512_xor_ps (casting should be free)
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
@@ -6934,10 +6923,10 @@ namespace EVM
       ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const *>(&in1[i+8]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
       ld3 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld3),neg));
       sc = _mm512_permutexvar_ps(p1, ld1);
@@ -6954,10 +6943,10 @@ namespace EVM
       ld1 = _mm512_maskz_loadu_ps (mask16(rem), &in2[i]);
       ld2 = _mm512_maskz_loadu_ps(mk,
           reinterpret_cast<float const *>(&in1[i]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm512_maskz_rcp14_ps(mask16(rem), ld1);
       ld1 = _mm512_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm512_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
       ld2 = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(ld2),neg));
       sc = _mm512_permutexvar_ps(p1, ld1);
       ld2 = _mm512_mul_ps(ld2, sc);
@@ -6985,10 +6974,10 @@ namespace EVM
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
       ld1 = _mm256_loadu_ps(&in2[i]);
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc = _mm256_rcp_ps(ld1);
       ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-      ld1 = _mm256_mul_ps(sc, ld1);   // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm256_mul_ps(sc, ld1);   // inv*(2-orig*inv) == 1/in2
       ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
       ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
       sc = _mm256_permutevar8x32_ps(ld1, p1);
@@ -7013,10 +7002,10 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
             &in1[i+4]), msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc = _mm256_rcp_ps(ld1);
         ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
         ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
         ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
         sc = _mm256_permutevar8x32_ps(ld1, p1);
@@ -7033,10 +7022,10 @@ namespace EVM
             reinterpret_cast<__m256i const *>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
             msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc = _mm256_rcp_ps(ld1);
         ld1 = _mm256_fnmadd_ps(ld1, sc, two); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc, ld1); // inv*(2-orig*inv) == 1/in2
         ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
         sc = _mm256_permutevar8x32_ps(ld1, p1);
         ld2 = _mm256_mul_ps(ld2, sc);
@@ -7064,11 +7053,11 @@ namespace EVM
       ld1 = _mm256_loadu_ps(&in2[i]);
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
       ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
-      // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+      // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
       sc1 = _mm256_rcp_ps(ld1);    // inv
       ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
       ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-      ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+      ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
       ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
       ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
       sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
@@ -7095,11 +7084,11 @@ namespace EVM
         ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
         ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
             &in1[i+4]), msk2);
-         // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+         // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc1 = _mm256_rcp_ps(ld1);    // inv
         ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
         ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
         ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
         ld3 = _mm256_xor_ps(ld3, neg);  // negate every other element
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
@@ -7118,11 +7107,11 @@ namespace EVM
             reinterpret_cast<__m256i const *>(masks[rem<<1]));
         ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
             msk2);
-        // compute 1/|in2|^2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
+        // compute 1/in2 with 1 stage Newton-Raphson (inv*(2-orig*inv))
         sc1 = _mm256_rcp_ps(ld1);    // inv
         ld1 = _mm256_mul_ps(ld1, sc1); // orig*inv
         ld1 = _mm256_sub_ps(two, ld1); // 2-orig*inv
-        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/|in2|^2
+        ld1 = _mm256_mul_ps(sc1, ld1); // inv*(2-orig*inv) == 1/in2
         ld2 = _mm256_xor_ps(ld2, neg);  // negate every other element
         sc2 = _mm256_unpacklo_ps(ld1, ld1); // [0,0,1,1,4,4,5,5]
         ld1 = _mm256_unpackhi_ps(ld1, ld1); // [2,2,3,3,6,6,7,7]
