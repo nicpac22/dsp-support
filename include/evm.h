@@ -594,6 +594,29 @@ namespace EVM
   //=============//
   // Dot-Product //
   //=============//
+  // Dot-product of two input buffers
+  //    in1 = first input buffer for dot-product
+  //    in2 = second input buffer for dot-product
+  //    len = number of elements to compute dot-product over
+  //    EVM::dotp = dot-product of in1 and in2
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len);
+  inline complex<float> dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  inline complex<float> dotp(float const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Point by point complex-conjugate dot-product of two input buffers, second
+  // input conjugated
+  //    in1 = first input buffer for dot-product
+  //    in2 = second input buffer for dot-product
+  //    len = number of elements to compute dot-product over
+  //    EVM::dotpc = dot-product of in1 and in2
+  inline complex<float> dotpc(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  inline complex<float> dotpc(float const * const in1,
+      complex<float> const * const in2, const int len);
+
 
   //================//
   // Raise to Power //
