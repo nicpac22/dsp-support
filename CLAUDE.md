@@ -65,7 +65,11 @@ default paths through use of DISABLE_<ISA>.
 **Processing scenarios** evm.h normally runs on longer buffers and on AVX2 or AVX-512 CPUs. When an optimization trades a few percent at short lengths (under ~32 elements) or on the AVX-only path for a long-buffer gain, the user prefers the simpler code that wins on long buffers.  Also prioritize absolute speed over FE_INVALID/FE_DIVBYZERO-clean tails.  Weight long-buffer AVX2/AVX-512 results most when recommending kernel changes; mention short-length or AVX-only regressions and let the user decide if they are worth fixing.  The exception is
 dot-product methods which will normally be run on shorter buffers.
 
-**Performance benchmark pitfalls** 
+**Performance benchmark pitfalls**
+- 4K aliasing: separate large std::vectors land at the same offset within a 4 KB page, so back-to-back calls serialize (next call's loads wait on the previous call's stores) and longer-latency kernels look slower at 8–64 elements. Time both that layout and buffers offset ~1 KB apart in one pool.
+- Code placement: differences under ~0.3 ns per call (about 1 cycle) can come from where code lands; identical machine code measured 3.24 vs 3.46 ns in two builds. Compare versions in the same binary, best of 3+, and don't attribute such gaps to source changes without checking the disassembly.
+- Extracted test copies need their `default` version too, or GCC compiles them as plain functions called directly (no ifunc dispatch), which flatters short-call timings
+
 
 ## Other headers
 
