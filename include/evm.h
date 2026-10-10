@@ -637,12 +637,10 @@ namespace EVM
   inline size_t getSize(const size_t desired)
   {
     static_assert(
-        std::is_same<T, double>::value ||
         std::is_same<T, float>::value ||
-        std::is_same<T, complex<float> >::value ||
-        std::is_same<T, complex<double> >::value,
-        "[EVM::getSize] Cannot use evm.h with types other than float, double, "
-        "complex<float>, or complex<double>");
+        std::is_same<T, complex<float> >::value,
+        "[EVM::getSize] Cannot use evm.h with types other than float or "
+        "complex<float>");
     if (MAX_SIMD_REG == 0) return desired; // all SIMD disabled
     int regSize; // zmm, ymm, or xmm register size in bytes
     if (__builtin_cpu_supports("avx512f"))
