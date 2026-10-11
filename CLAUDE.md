@@ -96,4 +96,6 @@ Present proposed code changes as a graphical VS Code diff: `code --reuse-window 
 - Each source file starts with the LGPL v3 license block (`Copyright (c) <year> Nick Xenias`), followed by a `//===` banner with Name / Purpose / Created / Description.
 - Commit messages are prefixed `Mod:`, `New:`, `Fix:`, or `Doc:`.
 - Style: 2-space indent, lines kept to about 80 columns, `T const * const` for input pointers and `T * const` for outputs.
-- keep fixes compiler-neutral, do not use GCC-only asm pinning
+- Try to keep fixes compiler-neutral, tell the user if there specific fixes for
+  GCC vs. Intel compiler but favor generic fixes instead of specific ones.
+- Do not commit or stage any changes to git, the user will handle that.

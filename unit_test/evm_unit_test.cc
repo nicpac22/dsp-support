@@ -12,6 +12,8 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * 
+ * Unlike most of my other software, this was vibe-coded.  Use with caution.
  */
 //==============================================================================
 // Name: evm_unit_test.cc
@@ -322,6 +324,78 @@ static void check(const char* name, const double tol,
 }
 
 //==============================================================================
+// Reduction test driver (dot-products)
+//
+//   runEvm(a, b, len)  calls the EVM reduction under test
+//
+// The baseline is the double precision sum of a[k]*b[k].  Summed in float in
+// any order, the result is within (len+1)*2^-24*sum|a[k]*b[k]| of it (the
+// standard forward error bound), so the error is measured against
+// sum|a[k]*b[k]| rather than the result, which cancellation can bring near
+// zero.  The inputs are copied into NaN-filled buffers, in2 one element off
+// in1's alignment, so a read past the end shows up as a NaN result.
+// Negative and zero lengths must return exactly 0.
+//==============================================================================
+template<class FEVM>
+static void checkDot(const char* name, const float* const aBuf,
+                     const float* const bBuf, FEVM runEvm)
+{
+  ++gTests;
+  const double u   = std::ldexp(1.0, -24);
+  const float  nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<float> a(MAXLEN + GUARD), b(MAXLEN + GUARD);
+
+  long   compared = 0;
+  int    nbad = 0, nshown = 0;
+  double worstRel = 0.0;
+
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len   = gLengths[li];
+    const int valid = (len > 0) ? len : 0;
+
+    for(int k=0; k<MAXLEN+GUARD; ++k) a[k] = b[k] = nan;
+    for(int k=0; k<valid; ++k) { a[k] = aBuf[k]; b[k+1] = bBuf[k]; }
+    const float got = runEvm(a.data(), b.data()+1, len);
+
+    double want = 0.0, absSum = 0.0;
+    for(int k=0; k<valid; ++k)
+    {
+      const double p = static_cast<double>(aBuf[k])*bBuf[k];
+      want   += p;
+      absSum += std::fabs(p);
+    }
+    const double adiff = std::fabs(got - want);
+    const double rdiff = (absSum > 0.0) ? adiff/absSum : adiff;
+    ++compared;
+
+    if((valid > 0) ? (rdiff <= (valid+1)*u) : (got == 0.0f))
+    {
+      if(rdiff > worstRel) worstRel = rdiff;
+      continue;
+    }
+    ++nbad;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d evm=%.9g baseline=%.9g absdiff=%.6g "
+             "reldiff=%.6g (of sum|a*b|, tol %.3g)\n",
+             len, got, want, adiff, rdiff, (valid+1)*u);
+    }
+  }
+
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, tol (len+1)*2^-24, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, worstRel);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
   const unsigned int seed = (argc > 1)
@@ -529,6 +603,11 @@ int main(int argc, char** argv)
           else EVM::divc2r(a,b,n,o); },
       [](int k){ return toCdbl(gAc[k]) / std::conj(toCdbl(gBc[k])); });
   }
+
+  //--- dotp : sum of in1 * in2 ----------------------------------------------
+  printf("\ndotp\n");
+  checkDot("dotp(float,float)", Af, Bf,
+    [](const float* a, const float* b, int n) { return EVM::dotp(a, b, n); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");

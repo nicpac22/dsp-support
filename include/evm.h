@@ -609,7 +609,7 @@ namespace EVM
   // Point by point complex-conjugate dot-product of two input buffers, second
   // input conjugated
   //    in1 = first input buffer for dot-product
-  //    in2 = second input buffer for dot-product
+  //    in2 = second input buffer for dot-product, conjugated
   //    len = number of elements to compute dot-product over
   //    EVM::dotpc = dot-product of in1 and in2
   inline complex<float> dotpc(complex<float> const * const in1,
@@ -8907,6 +8907,341 @@ namespace EVM
   //=====================================//
   // Dot-Product Function Implementation //
   //=====================================//
+  // real*real dot-product
+  #if !defined(DISABLE_AVX512) // AVX512 real*real dotp
+  __attribute__((__target__("avx512f")))
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len)
+  {
+    if(len<=0) return 0;
+    __m512 ld1, ld2;
+    __m512 sum = _mm512_set1_ps(0.0f);
+    int i = 0;
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 63)
+    {
+      __m512 sum1 = sum;
+      __m512 sum2 = sum;
+      __m512 sum3 = sum;
+      for(; i<len-63; i+=64) // process 4 registers (64 real elements)
+      {
+        ld1 = _mm512_loadu_ps(&in1[i]);
+        ld2 = _mm512_loadu_ps(&in2[i]);
+        sum = _mm512_fmadd_ps(ld1, ld2, sum);
+        ld1 = _mm512_loadu_ps(&in1[i+16]);
+        ld2 = _mm512_loadu_ps(&in2[i+16]);
+        sum1 = _mm512_fmadd_ps(ld1, ld2, sum1);
+        ld1 = _mm512_loadu_ps(&in1[i+32]);
+        ld2 = _mm512_loadu_ps(&in2[i+32]);
+        sum2 = _mm512_fmadd_ps(ld1, ld2, sum2);
+        ld1 = _mm512_loadu_ps(&in1[i+48]);
+        ld2 = _mm512_loadu_ps(&in2[i+48]);
+        sum3 = _mm512_fmadd_ps(ld1, ld2, sum3);
+      }
+      sum = _mm512_add_ps(sum, sum1);
+      sum2 = _mm512_add_ps(sum2, sum3);
+      sum = _mm512_add_ps(sum, sum2);
+    }
+    // 0-3 full registers remain and up to 1 partial register, compute these
+    // individually as using a loop will cause intel compiler to save/restore
+    // additional registers
+    // bit 5 indicates there are at least 32 elements that weren't taken care
+    // of by the loop above
+    if(len&32) // process 2 registers (32 real elements)
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      ld1 = _mm512_loadu_ps(&in1[i+16]);
+      ld2 = _mm512_loadu_ps(&in2[i+16]);
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      i += 32;
+    }
+    // bit 4 indicates there were an additional 16 elements not taken care of
+    // by the loop above
+    if(len&16) // 1 register (16 real elements)
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      i += 16;
+    }
+    // handle remaining elements in partial register (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+    }
+    return _mm512_reduce_add_ps(sum);
+  }
+  #endif // end AVX512 real*real dotp
+  #if !defined(DISABLE_AVX2) // AVX2 real*real dotp
+  __attribute__((__target__("avx2,fma")))
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len)
+  {
+    if(len<=0) return 0;
+    __m256 ld1, ld2;
+    __m256 sum = _mm256_set1_ps(0.0f);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 31)
+    {
+      __m256 sum1 = sum;
+      __m256 sum2 = sum;
+      __m256 sum3 = sum;
+      for(; i<len-31; i+=32) // process 4 registers (32 real elements)
+      {
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld2 = _mm256_loadu_ps(&in2[i]);
+        sum = _mm256_fmadd_ps(ld1, ld2, sum);
+        ld1 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_loadu_ps(&in2[i+8]);
+        sum1 = _mm256_fmadd_ps(ld1, ld2, sum1);
+        ld1 = _mm256_loadu_ps(&in1[i+16]);
+        ld2 = _mm256_loadu_ps(&in2[i+16]);
+        sum2 = _mm256_fmadd_ps(ld1, ld2, sum2);
+        ld1 = _mm256_loadu_ps(&in1[i+24]);
+        ld2 = _mm256_loadu_ps(&in2[i+24]);
+        sum3 = _mm256_fmadd_ps(ld1, ld2, sum3);
+      }
+      sum = _mm256_add_ps(sum, sum1);
+      sum2 = _mm256_add_ps(sum2, sum3);
+      sum = _mm256_add_ps(sum, sum2);
+    }
+    // 0-3 full registers remain and up to 1 partial register, compute these
+    // individually as using a loop will cause intel compiler to save/restore
+    // additional registers
+    // bit 4 indicates there are at least 16 elements that weren't taken care
+    // of by the loop above
+    if(len&16) // 2 registers (16 real elements)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      ld1 = _mm256_loadu_ps(&in1[i+8]);
+      ld2 = _mm256_loadu_ps(&in2[i+8]);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      i += 16;
+    }
+    // bit 3 indicates there were an additional 8 elements not taken care of
+    // by the loop above
+    if(len&8) // 1 register (8 real elements)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      i += 8;
+    }
+    // handle remaining elements in partial register (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+    }
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    return _mm_cvtss_f32(hs); // extract the first element in the register
+  }
+  #endif // end AVX2 real*real dotp
+  #if !defined(DISABLE_AVX) // AVX real*real dotp
+  __attribute__((__target__("avx")))
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len)
+  {
+    if(len<=0) return 0;
+    __m256 ld1, ld2;
+    __m256 sum = _mm256_set1_ps(0.0f);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: with a single accumulator every mul/add waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 31)
+    {
+      __m256 sum1 = sum;
+      __m256 sum2 = sum;
+      __m256 sum3 = sum;
+      for(; i<len-31; i+=32) // process 4 registers (32 real elements)
+      {
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld2 = _mm256_loadu_ps(&in2[i]);
+        ld1 = _mm256_mul_ps(ld1, ld2);
+        sum = _mm256_add_ps(ld1, sum);
+        ld1 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_loadu_ps(&in2[i+8]);
+        ld1 = _mm256_mul_ps(ld1, ld2);
+        sum1 = _mm256_add_ps(ld1, sum1);
+        ld1 = _mm256_loadu_ps(&in1[i+16]);
+        ld2 = _mm256_loadu_ps(&in2[i+16]);
+        ld1 = _mm256_mul_ps(ld1, ld2);
+        sum2 = _mm256_add_ps(ld1, sum2);
+        ld1 = _mm256_loadu_ps(&in1[i+24]);
+        ld2 = _mm256_loadu_ps(&in2[i+24]);
+        ld1 = _mm256_mul_ps(ld1, ld2);
+        sum3 = _mm256_add_ps(ld1, sum3);
+      }
+      sum = _mm256_add_ps(sum, sum1);
+      sum2 = _mm256_add_ps(sum2, sum3);
+      sum = _mm256_add_ps(sum, sum2);
+    }
+    // 0-3 full registers remain and up to 1 partial register, compute these
+    // individually as using a loop will cause intel compiler to save/restore
+    // additional registers
+    // bit 4 indicates there are at least 16 elements that weren't taken care
+    // of by the loop above
+    if(len&16) // 2 registers (16 real elements)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+      ld1 = _mm256_loadu_ps(&in1[i+8]);
+      ld2 = _mm256_loadu_ps(&in2[i+8]);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+      i += 16;
+    }
+    // bit 3 indicates there were an additional 8 elements not taken care of
+    // by the loop above
+    if(len&8) // 1 register (8 real elements)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+      i += 8;
+    }
+    // handle remaining elements in partial register (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+    }
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    return _mm_cvtss_f32(hs); // extract the first element in the register
+  }
+  #endif // end AVX real*real dotp
+  __attribute__((__target__("default"))) // default real*real dotp
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len)
+  {
+    float sum = 0.0f;
+    for(int i=0; i<len; ++i) sum += (in1[i]*in2[i]);
+    return sum;
+  }
+
+
+
+
+
+/*
+  #if !defined(DISABLE_AVX512) // AVX512 complex*complex dotp
+  __attribute__((__target__("avx512f")))
+  
+  #endif // end AVX512 complex*complex dotp
+  #if !defined(DISABLE_AVX2) // AVX2 complex*complex dotp
+  __attribute__((__target__("avx2,fma")))
+  
+  #endif // end AVX2 complex*complex dotp
+  #if !defined(DISABLE_AVX) // AVX complex*complex dotp
+  __attribute__((__target__("avx")))
+
+  #endif // end AVX complex*complex dotp
+  __attribute__((__target__("default"))) // default complex*complex dotp
+  inline complex<float> dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+
+  }
+  
+
+
+
+  #if !defined(DISABLE_AVX512) // AVX512 real*complex dotp
+  __attribute__((__target__("avx512f")))
+  
+  #endif // end AVX512 real*complex dotp
+  #if !defined(DISABLE_AVX2) // AVX2 real*complex dotp
+  __attribute__((__target__("avx2,fma")))
+  
+  #endif // end AVX2 real*complex dotp
+  #if !defined(DISABLE_AVX) // AVX real*complex dotp
+  __attribute__((__target__("avx")))
+
+  #endif // end AVX real*complex dotp
+  __attribute__((__target__("default"))) // default real*complex dotp
+  inline complex<float> dotp(float const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+
+  }
+  
+
+
+  #if !defined(DISABLE_AVX512) // AVX512 complex*conj(complex) dotp
+  __attribute__((__target__("avx512f")))
+  
+  #endif // end AVX512 complex*conj(complex) dotp
+  #if !defined(DISABLE_AVX2) // AVX2 complex*conj(complex) dotp
+  __attribute__((__target__("avx2,fma")))
+  
+  #endif // end AVX2 complex*conj(complex) dotp
+  #if !defined(DISABLE_AVX) // AVX complex*conj(complex) dotp
+  __attribute__((__target__("avx")))
+
+  #endif // end AVX complex*conj(complex) dotp
+  __attribute__((__target__("default"))) // default complex*conj(complex) dotp
+  inline complex<float> dotpc(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+
+  }
+  
+
+
+
+  #if !defined(DISABLE_AVX512) // AVX512 real*conj(complex) dotp
+  __attribute__((__target__("avx512f")))
+  
+  #endif // end AVX512 real*conj(complex) dotp
+  #if !defined(DISABLE_AVX2) // AVX2 real*conj(complex) dotp
+  __attribute__((__target__("avx2,fma")))
+  
+  #endif // end AVX2 real*conj(complex) dotp
+  #if !defined(DISABLE_AVX) // AVX real*conj(complex) dotp
+  __attribute__((__target__("avx")))
+
+  #endif // end AVX real*conj(complex) dotp
+  __attribute__((__target__("default"))) // default real*conj(complex) dotp
+  inline complex<float> dotpc(float const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+
+  }
+*/
+
 
   //========================================//
   // Raise to Power Function Implementation //
