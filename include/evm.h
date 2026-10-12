@@ -594,20 +594,35 @@ namespace EVM
   //=============//
   // Dot-Product //
   //=============//
-  // Dot-product of two input buffers
+  // Dot-product of two input buffers, if len <= 0, out will be set to 0
   //    in1 = first input buffer for dot-product
   //    in2 = second input buffer for dot-product
   //    len = number of elements to compute dot-product over
-  //    EVM::dotp = dot-product of in1 and in2
+  //    out = dot-product of in1 and in2
+  inline void dotp(float const * const in1, float const * const in2,
+      const int len, float &out);
+  inline void dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  inline void dotp(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  
+  // Wrappers for dotp functions that return by value, these may be slightly
+  // slower than the reference versions due to the extra copy
   inline float dotp(float const * const in1, float const * const in2,
       const int len);
   inline complex<float> dotp(complex<float> const * const in1,
       complex<float> const * const in2, const int len);
+  /*
   inline complex<float> dotp(float const * const in1,
-      complex<float> const * const in2, const int len);
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotp(in1, in2, len, out);
+    return out;
+  }
   
   // Point by point complex-conjugate dot-product of two input buffers, second
-  // input conjugated
+  // input conjugated, if len <= 0, out will be set to 0
   //    in1 = first input buffer for dot-product
   //    in2 = second input buffer for dot-product, conjugated
   //    len = number of elements to compute dot-product over
@@ -616,7 +631,23 @@ namespace EVM
       complex<float> const * const in2, const int len);
   inline complex<float> dotpc(float const * const in1,
       complex<float> const * const in2, const int len);
-
+  // Wrappers for dotp functions that return by value, these may be slightly
+  // slower than the reference versions due to the extra copy
+  inline complex<float> dotpc(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpc(in1, in2, len, out);
+    return out;
+  }
+  inline complex<float> dotpc(float const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpc(in1, in2, len, out);
+    return out;
+  }
+  */
 
   //================//
   // Raise to Power //
@@ -8910,10 +8941,14 @@ namespace EVM
   // real*real dot-product
   #if !defined(DISABLE_AVX512) // AVX512 real*real dotp
   __attribute__((__target__("avx512f")))
-  inline float dotp(float const * const in1, float const * const in2,
-      const int len)
+  inline void dotp(float const * const in1, float const * const in2,
+      const int len, float &out)
   {
-    if(len<=0) return 0;
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
     __m512 ld1, ld2;
     __m512 sum = _mm512_set1_ps(0.0f);
     int i = 0;
@@ -8976,15 +9011,20 @@ namespace EVM
       ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
       sum = _mm512_fmadd_ps(ld1, ld2, sum);
     }
-    return _mm512_reduce_add_ps(sum);
+    out = _mm512_reduce_add_ps(sum);
+    return;
   }
   #endif // end AVX512 real*real dotp
   #if !defined(DISABLE_AVX2) // AVX2 real*real dotp
   __attribute__((__target__("avx2,fma")))
-  inline float dotp(float const * const in1, float const * const in2,
-      const int len)
+  inline void dotp(float const * const in1, float const * const in2,
+      const int len, float &out)
   {
-    if(len<=0) return 0;
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
     __m256 ld1, ld2;
     __m256 sum = _mm256_set1_ps(0.0f);
     __m128 hs;  // horizontal sum to finish dot-product
@@ -9054,15 +9094,20 @@ namespace EVM
     hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
     hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
     hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
-    return _mm_cvtss_f32(hs); // extract the first element in the register
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
   }
   #endif // end AVX2 real*real dotp
   #if !defined(DISABLE_AVX) // AVX real*real dotp
   __attribute__((__target__("avx")))
-  inline float dotp(float const * const in1, float const * const in2,
-      const int len)
+  inline void dotp(float const * const in1, float const * const in2,
+      const int len, float &out)
   {
-    if(len<=0) return 0;
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
     __m256 ld1, ld2;
     __m256 sum = _mm256_set1_ps(0.0f);
     __m128 hs;  // horizontal sum to finish dot-product
@@ -9140,45 +9185,318 @@ namespace EVM
     hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
     hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
     hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
-    return _mm_cvtss_f32(hs); // extract the first element in the register
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
   }
   #endif // end AVX real*real dotp
   __attribute__((__target__("default"))) // default real*real dotp
-  inline float dotp(float const * const in1, float const * const in2,
-      const int len)
+  inline void dotp(float const * const in1, float const * const in2,
+      const int len, float &out)
   {
+    // use a separate sum so the compiler knows that it won't alias with the
+    // inputs (when summing directly into out the compiler can not assume this
+    // and it costs load/store cycles)
     float sum = 0.0f;
     for(int i=0; i<len; ++i) sum += (in1[i]*in2[i]);
-    return sum;
+    out = sum;
+    return;
   }
 
-
-
-
-
-/*
+  // complex*complex dot-product
   #if !defined(DISABLE_AVX512) // AVX512 complex*complex dotp
   __attribute__((__target__("avx512f")))
-  
+  inline void dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, sh;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA unit busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 15)
+    {
+      __m512 sumr2 = sumr;
+      __m512 sumi2 = sumr;
+      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+      {
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm512_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm512_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm512_add_ps(sumr, sumr2);
+      sumi = _mm512_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 3 of len is set
+    if(len&8) // process 1 register (8 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 8;
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = mask16(rem<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in2[i])); // B
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in every 128-bit lane
+    ld1 = _mm512_unpacklo_ps(sumr, sumi);// [r0, i0, r1, i1,.,. | r8, i8, ...]
+    ld2 = _mm512_unpackhi_ps(sumr, sumi);// [r2, i2, r3, i3,... | r10, i10, ...]
+    ld1 = _mm512_add_ps(ld1, ld2);  // [r0+r2, i0+i2, ... | r8+r10, i8+i10, ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs1 = _mm_addsub_ps(hs1, _mm_permute_ps(hs1, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
   #endif // end AVX512 complex*complex dotp
   #if !defined(DISABLE_AVX2) // AVX2 complex*complex dotp
   __attribute__((__target__("avx2,fma")))
-  
+  inline void dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA units busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = sumr;
+      __m256 sumi2 = sumr;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm256_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm256_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 2 of len is set
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 4;
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs = _mm_addsub_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
   #endif // end AVX2 complex*complex dotp
   #if !defined(DISABLE_AVX) // AVX complex*complex dotp
   __attribute__((__target__("avx")))
-
+  inline void dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: with a single pair of accumulators every mul/add waits on the
+    // previous one, so longer buffers use 2 pairs to keep the pipeline full,
+    // combining them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = sumr;
+      __m256 sumi2 = sumr;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+        ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+        sumr = _mm256_add_ps(sumr, ld1);
+        sumi = _mm256_add_ps(sumi, ld2);
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);
+        ld1 = _mm256_mul_ps(ld1, ld2);
+        ld2 = _mm256_mul_ps(sh, ld2);
+        sumr2 = _mm256_add_ps(sumr2, ld1);
+        sumi2 = _mm256_add_ps(sumi2, ld2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 2 of len is set
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+      i += 4;
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), msk);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs = _mm_addsub_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
   #endif // end AVX complex*complex dotp
   __attribute__((__target__("default"))) // default complex*complex dotp
+  inline void dotp(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    for(int i=0; i<len; ++i)
+    {
+      reSum += (in1[i].real()*in2[i].real()-in1[i].imag()*in2[i].imag());
+      imSum += (in1[i].real()*in2[i].imag()+in1[i].imag()*in2[i].real()); 
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+
+  // by-value wrappers, defined after every target version so the calls go
+  // through the runtime dispatcher
+  inline float dotp(float const * const in1, float const * const in2,
+      const int len)
+  {
+    float out;
+    dotp(in1, in2, len, out);
+    return out;
+  }
   inline complex<float> dotp(complex<float> const * const in1,
       complex<float> const * const in2, const int len)
   {
-
+    complex<float> out;
+    dotp(in1, in2, len, out);
+    return out;
   }
   
 
-
-
+  /*
+  // real*complex dot-product
   #if !defined(DISABLE_AVX512) // AVX512 real*complex dotp
   __attribute__((__target__("avx512f")))
   

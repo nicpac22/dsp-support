@@ -326,27 +326,32 @@ static void check(const char* name, const double tol,
 //==============================================================================
 // Reduction test driver (dot-products)
 //
-//   runEvm(a, b, len)  calls the EVM reduction under test
+//   runEvm(a, b, len, res)  calls the EVM reduction under test and puts its
+//                           result in res[0]; res[1] is a guard that must be
+//                           left untouched
 //
 // The baseline is the double precision sum of a[k]*b[k].  Summed in float in
-// any order, the result is within (len+1)*2^-24*sum|a[k]*b[k]| of it (the
-// standard forward error bound), so the error is measured against
-// sum|a[k]*b[k]| rather than the result, which cancellation can bring near
-// zero.  The inputs are copied into NaN-filled buffers, in2 one element off
-// in1's alignment, so a read past the end shows up as a NaN result.
-// Negative and zero lengths must return exactly 0.
+// any order, each component of the result is within (m+1)*2^-24 times the sum
+// of the magnitudes of its m product terms (the standard forward error bound;
+// m = len for real inputs and 2*len for complex, whose real and imaginary
+// parts each add two products per element).  The error is measured against
+// that magnitude sum rather than the result, which cancellation can bring
+// near zero.  The inputs are copied into NaN-filled buffers, in2 one element
+// off in1's alignment, so a read past the end shows up as a NaN result.
+// Negative and zero lengths must give exactly 0.
 //==============================================================================
-template<class FEVM>
-static void checkDot(const char* name, const float* const aBuf,
-                     const float* const bBuf, FEVM runEvm)
+template<class T, class FEVM>
+static void checkDot(const char* name, const T* const aBuf,
+                     const T* const bBuf, FEVM runEvm)
 {
   ++gTests;
-  const double u   = std::ldexp(1.0, -24);
-  const float  nan = std::numeric_limits<float>::quiet_NaN();
-  std::vector<float> a(MAXLEN + GUARD), b(MAXLEN + GUARD);
+  const bool   cplx  = IsComplex<T>::value;
+  const int    terms = cplx ? 2 : 1;   // products per element per component
+  const double u     = std::ldexp(1.0, -24);
+  std::vector<T> a(MAXLEN + GUARD), b(MAXLEN + GUARD);
 
   long   compared = 0;
-  int    nbad = 0, nshown = 0;
+  int    nbad = 0, nshown = 0, nstray = 0;
   double worstRel = 0.0;
 
   for(size_t li=0; li<gLengths.size(); ++li)
@@ -354,22 +359,43 @@ static void checkDot(const char* name, const float* const aBuf,
     const int len   = gLengths[li];
     const int valid = (len > 0) ? len : 0;
 
-    for(int k=0; k<MAXLEN+GUARD; ++k) a[k] = b[k] = nan;
+    for(int k=0; k<MAXLEN+GUARD; ++k) a[k] = b[k] = sentinel<T>();
     for(int k=0; k<valid; ++k) { a[k] = aBuf[k]; b[k+1] = bBuf[k]; }
-    const float got = runEvm(a.data(), b.data()+1, len);
+    T res[2] = {sentinel<T>(), sentinel<T>()};
+    runEvm(a.data(), b.data()+1, len, res);
+    const cdbl got = toCdbl(res[0]);
 
-    double want = 0.0, absSum = 0.0;
+    // baseline, and the magnitude sums that scale each component's error
+    cdbl   want  = 0.0;
+    double absRe = 0.0, absIm = 0.0;
     for(int k=0; k<valid; ++k)
     {
-      const double p = static_cast<double>(aBuf[k])*bBuf[k];
-      want   += p;
-      absSum += std::fabs(p);
+      const cdbl x = toCdbl(aBuf[k]), y = toCdbl(bBuf[k]);
+      want  += x*y;
+      absRe += std::fabs(x.real()*y.real()) + std::fabs(x.imag()*y.imag());
+      absIm += std::fabs(x.real()*y.imag()) + std::fabs(x.imag()*y.real());
     }
-    const double adiff = std::fabs(got - want);
-    const double rdiff = (absSum > 0.0) ? adiff/absSum : adiff;
+    const double tol   = (terms*valid + 1)*u;
+    const double dRe   = std::fabs(got.real() - want.real());
+    const double dIm   = std::fabs(got.imag() - want.imag());
+    const double rdiff = std::max((absRe > 0.0) ? dRe/absRe : dRe,
+                                  (absIm > 0.0) ? dIm/absIm : dIm);
     ++compared;
 
-    if((valid > 0) ? (rdiff <= (valid+1)*u) : (got == 0.0f))
+    // --- writes past the single result ---
+    if(!isSentinel(res[1]))
+    {
+      ++nstray;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        printf("      len=%-5d WROTE PAST THE RESULT evm=%s\n", len,
+               format(toCdbl(res[1]), cplx).c_str());
+      }
+    }
+
+    // --- value (NaN fails both tests) ---
+    if((valid > 0) ? (rdiff <= tol) : (got == cdbl(0.0, 0.0)))
     {
       if(rdiff > worstRel) worstRel = rdiff;
       continue;
@@ -378,21 +404,23 @@ static void checkDot(const char* name, const float* const aBuf,
     if(nshown < MAX_REPORT)
     {
       ++nshown;
-      printf("      len=%-5d evm=%.9g baseline=%.9g absdiff=%.6g "
-             "reldiff=%.6g (of sum|a*b|, tol %.3g)\n",
-             len, got, want, adiff, rdiff, (valid+1)*u);
+      printf("      len=%-5d evm=%s baseline=%s reldiff=%.6g "
+             "(of sum|a*b|, tol %.3g)\n", len, format(got, cplx).c_str(),
+             format(want, cplx).c_str(), rdiff, tol);
     }
   }
 
-  const bool pass = (nbad == 0);
+  const bool pass = (nbad == 0 && nstray == 0);
   if(!pass) ++gFailed;
 
-  printf("  %-34s %s  [%ld values, tol (len+1)*2^-24, worst rel %.3e",
-         name, pass ? "PASS" : "FAIL", compared, worstRel);
-  if(nbad) printf(", %d wrong", nbad);
+  printf("  %-34s %s  [%ld values, tol (%slen+1)*2^-24, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, cplx ? "2*" : "", worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
   printf("]\n");
-  if(nbad > nshown)
-    printf("      ... %d further problems not shown\n", nbad - nshown);
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
 }
 
 //==============================================================================
@@ -605,9 +633,24 @@ int main(int argc, char** argv)
   }
 
   //--- dotp : sum of in1 * in2 ----------------------------------------------
+  // the reference versions write the result to out, the by-value wrappers
+  // return it
   printf("\ndotp\n");
   checkDot("dotp(float,float)", Af, Bf,
-    [](const float* a, const float* b, int n) { return EVM::dotp(a, b, n); });
+    [](const float* a, const float* b, int n, float* r)
+      { EVM::dotp(a, b, n, r[0]); });
+
+  checkDot("dotp(float,float) by value", Af, Bf,
+    [](const float* a, const float* b, int n, float* r)
+      { r[0] = EVM::dotp(a, b, n); });
+
+  checkDot("dotp(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotp(a, b, n, r[0]); });
+
+  checkDot("dotp(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotp(a, b, n); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");
