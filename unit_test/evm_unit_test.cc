@@ -333,22 +333,25 @@ static void check(const char* name, const double tol,
 // The baseline is the double precision sum of a[k]*b[k].  Summed in float in
 // any order, each component of the result is within (m+1)*2^-24 times the sum
 // of the magnitudes of its m product terms (the standard forward error bound;
-// m = len for real inputs and 2*len for complex, whose real and imaginary
-// parts each add two products per element).  The error is measured against
-// that magnitude sum rather than the result, which cancellation can bring
-// near zero.  The inputs are copied into NaN-filled buffers, in2 one element
-// off in1's alignment, so a read past the end shows up as a NaN result.
-// Negative and zero lengths must give exactly 0.
+// m = 2*len when both inputs are complex, whose real and imaginary parts each
+// add two products per element, otherwise m = len).  The error is measured
+// against that magnitude sum rather than the result, which cancellation can
+// bring near zero.  The inputs are copied into NaN-filled buffers, in2 one
+// element off in1's alignment, so a read past the end shows up as a NaN
+// result.  Negative and zero lengths must give exactly 0.
 //==============================================================================
-template<class T, class FEVM>
-static void checkDot(const char* name, const T* const aBuf,
-                     const T* const bBuf, FEVM runEvm)
+template<class TA, class TB, class FEVM>
+static void checkDot(const char* name, const TA* const aBuf,
+                     const TB* const bBuf, FEVM runEvm)
 {
+  typedef decltype(TA()*TB()) T;       // result type
   ++gTests;
   const bool   cplx  = IsComplex<T>::value;
-  const int    terms = cplx ? 2 : 1;   // products per element per component
+  // products per element per component
+  const int    terms = (IsComplex<TA>::value && IsComplex<TB>::value) ? 2 : 1;
   const double u     = std::ldexp(1.0, -24);
-  std::vector<T> a(MAXLEN + GUARD), b(MAXLEN + GUARD);
+  std::vector<TA> a(MAXLEN + GUARD);
+  std::vector<TB> b(MAXLEN + GUARD);
 
   long   compared = 0;
   int    nbad = 0, nshown = 0, nstray = 0;
@@ -359,7 +362,11 @@ static void checkDot(const char* name, const T* const aBuf,
     const int len   = gLengths[li];
     const int valid = (len > 0) ? len : 0;
 
-    for(int k=0; k<MAXLEN+GUARD; ++k) a[k] = b[k] = sentinel<T>();
+    for(int k=0; k<MAXLEN+GUARD; ++k)
+    {
+      a[k] = sentinel<TA>();
+      b[k] = sentinel<TB>();
+    }
     for(int k=0; k<valid; ++k) { a[k] = aBuf[k]; b[k+1] = bBuf[k]; }
     T res[2] = {sentinel<T>(), sentinel<T>()};
     runEvm(a.data(), b.data()+1, len, res);
@@ -414,7 +421,8 @@ static void checkDot(const char* name, const T* const aBuf,
   if(!pass) ++gFailed;
 
   printf("  %-34s %s  [%ld values, tol (%slen+1)*2^-24, worst rel %.3e",
-         name, pass ? "PASS" : "FAIL", compared, cplx ? "2*" : "", worstRel);
+         name, pass ? "PASS" : "FAIL", compared, (terms == 2) ? "2*" : "",
+         worstRel);
   if(nbad)   printf(", %d wrong", nbad);
   if(nstray) printf(", %d past end", nstray);
   printf("]\n");
@@ -651,6 +659,14 @@ int main(int argc, char** argv)
   checkDot("dotp(complex,complex) by value", Ac, Bc,
     [](const complex<float>* a, const complex<float>* b, int n,
        complex<float>* r) { r[0] = EVM::dotp(a, b, n); });
+
+  checkDot("dotp(float,complex)", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { EVM::dotp(a, b, n, r[0]); });
+
+  checkDot("dotp(float,complex) by value", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { r[0] = EVM::dotp(a, b, n); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");
