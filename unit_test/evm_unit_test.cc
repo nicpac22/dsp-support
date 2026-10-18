@@ -62,6 +62,7 @@
 //    g++ ... -DDISABLE_AVX2 ...     // exercise the AVX branch
 //    g++ ... -DDISABLE_SIMD ...     // exercise the scalar branch
 //==============================================================================
+#include <algorithm>
 #include <complex>
 #include <vector>
 #include <random>
@@ -69,6 +70,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 
@@ -167,6 +169,13 @@ template<> complex<float> sentinel<complex<float> >()
   return complex<float>(n, n);
 }
 
+// z raised to the power 2^squarings, the baseline for pow2/pow4/pow8
+static cdbl powSq(cdbl z, const int squarings)
+{
+  for(int k=0; k<squarings; ++k) z *= z;
+  return z;
+}
+
 static bool isSentinel(const float v) { return std::isnan(v); }
 static bool isSentinel(const complex<float> v)
 {
@@ -207,6 +216,10 @@ static int gTests = 0, gFailed = 0;
 //
 // bBuf may be null for the single-input functions (scale), in which case the
 // second pointer handed to runEvm is unused.
+//
+// Relative error is measured against max(|baseline|, FLT_MIN): float results
+// below FLT_MIN are subnormal and carry only absolute precision (pow8 of a
+// small input lands there).
 //==============================================================================
 template<class TA, class TB, class TO, class FEVM, class FREF>
 static void check(const char* name, const double tol,
@@ -221,25 +234,47 @@ static void check(const char* name, const double tol,
   double worstRel = 0.0;
 
   std::vector<TO> out(MAXLEN + GUARD);
+  // complex input buffer whose front receives the real results in mode 3
+  const bool cplxToReal = IsComplex<TA>::value && !cplx;
+  std::vector<TA> io(MAXLEN + GUARD);
 
   // mode 0: separate buffers.  mode 1: out aliases in1.  mode 2: out aliases
-  // in2.  The header states the output buffer may be the same as an input
-  // buffer, so the aliasing modes are part of the contract, not a bonus.
-  for(int mode=0; mode<3; ++mode)
+  // in2.  mode 3: a real output overwrites the front of a complex in1 (the
+  // magnitude functions).  The header states the output buffer may be the
+  // same as an input buffer, so the aliasing modes are part of the contract,
+  // not a bonus.
+  for(int mode=0; mode<4; ++mode)
   {
     if(mode == 1 && !std::is_same<TA, TO>::value) continue;
     if(mode == 2 && (!std::is_same<TB, TO>::value || bBuf == NULL)) continue;
+    if(mode == 3 && !cplxToReal) continue;
     const char* modeName = (mode==0) ? "" :
-                           (mode==1) ? " [in-place on in1]" : " [in-place on in2]";
+                           (mode==1) ? " [in-place on in1]" :
+                           (mode==2) ? " [in-place on in2]" :
+                                       " [in-place over complex in1]";
 
     for(size_t li=0; li<gLengths.size(); ++li)
     {
       const int len   = gLengths[li];
       const int valid = (len > 0) ? len : 0;
 
+      // results and how many of them to check for stray writes
+      TO* res = out.data();
+      int resLen = MAXLEN + GUARD;
       for(int k=0; k<MAXLEN+GUARD; ++k) out[k] = sentinel<TO>();
 
-      if(mode == 0)
+      if(mode == 3)
+      {
+        if constexpr (IsComplex<TA>::value && !IsComplex<TO>::value)
+        {
+          for(int k=0; k<MAXLEN+GUARD; ++k)
+            io[k] = (k < valid) ? aBuf[k] : sentinel<TA>();
+          res = reinterpret_cast<TO*>(io.data());
+          resLen = 2*(MAXLEN + GUARD);
+          runEvm(io.data(), bBuf, len, res);
+        }
+      }
+      else if(mode == 0)
       {
         runEvm(aBuf, bBuf, len, out.data());
       }
@@ -264,11 +299,12 @@ static void check(const char* name, const double tol,
       // --- values ---
       for(int k=0; k<valid; ++k)
       {
-        const cdbl   got   = toCdbl(out[k]);
+        const cdbl   got   = toCdbl(res[k]);
         const cdbl   want  = baseline(k);
         const double adiff = std::abs(got - want);
-        const double mag   = std::abs(want);
-        const double rdiff = (mag > 0.0) ? adiff/mag : adiff;
+        const double mag   = std::max(std::abs(want),
+            static_cast<double>(std::numeric_limits<float>::min()));
+        const double rdiff = adiff/mag;
         ++compared;
 
         if(rdiff <= tol)
@@ -280,7 +316,7 @@ static void check(const char* name, const double tol,
         if(nshown < MAX_REPORT)
         {
           ++nshown;
-          if(isSentinel(out[k]))
+          if(isSentinel(res[k]))
           {
             printf("      len=%-5d element %-5d NOT WRITTEN   baseline=%s%s\n",
                    len, k, format(want, cplx).c_str(), modeName);
@@ -296,15 +332,23 @@ static void check(const char* name, const double tol,
       }
 
       // --- writes past the requested length (covers negative len too) ---
-      for(int k=valid; k<MAXLEN+GUARD; ++k)
+      // in mode 3 the floats after the results still hold the unused part of
+      // the complex input, which must be left as it was
+      const float* inFloats = cplxToReal ?
+          reinterpret_cast<const float*>(aBuf) : NULL;
+      for(int k=valid; k<resLen; ++k)
       {
-        if(isSentinel(out[k])) continue;
+        if(mode == 3 && k < 2*valid)
+        {
+          if(std::memcmp(&res[k], &inFloats[k], sizeof(float)) == 0) continue;
+        }
+        else if(isSentinel(res[k])) continue;
         ++nstray;
         if(nshown < MAX_REPORT)
         {
           ++nshown;
           printf("      len=%-5d element %-5d WROTE PAST END evm=%s%s\n",
-                 len, k, format(toCdbl(out[k]), cplx).c_str(), modeName);
+                 len, k, format(toCdbl(res[k]), cplx).c_str(), modeName);
         }
       }
     }
@@ -329,6 +373,8 @@ static void check(const char* name, const double tol,
 //   runEvm(a, b, len, res)  calls the EVM reduction under test and puts its
 //                           result in res[0]; res[1] is a guard that must be
 //                           left untouched
+//   conjB                   true for the conjugate dot-products, whose
+//                           baseline uses conj(b[k])
 //
 // The baseline is the double precision sum of a[k]*b[k].  Summed in float in
 // any order, each component of the result is within (m+1)*2^-24 times the sum
@@ -342,7 +388,8 @@ static void check(const char* name, const double tol,
 //==============================================================================
 template<class TA, class TB, class FEVM>
 static void checkDot(const char* name, const TA* const aBuf,
-                     const TB* const bBuf, FEVM runEvm)
+                     const TB* const bBuf, FEVM runEvm,
+                     const bool conjB = false)
 {
   typedef decltype(TA()*TB()) T;       // result type
   ++gTests;
@@ -377,7 +424,8 @@ static void checkDot(const char* name, const TA* const aBuf,
     double absRe = 0.0, absIm = 0.0;
     for(int k=0; k<valid; ++k)
     {
-      const cdbl x = toCdbl(aBuf[k]), y = toCdbl(bBuf[k]);
+      const cdbl x = toCdbl(aBuf[k]);
+      const cdbl y = conjB ? std::conj(toCdbl(bBuf[k])) : toCdbl(bBuf[k]);
       want  += x*y;
       absRe += std::fabs(x.real()*y.real()) + std::fabs(x.imag()*y.imag());
       absIm += std::fabs(x.real()*y.imag()) + std::fabs(x.imag()*y.real());
@@ -667,6 +715,75 @@ int main(int argc, char** argv)
   checkDot("dotp(float,complex) by value", Af, Bc,
     [](const float* a, const complex<float>* b, int n, complex<float>* r)
       { r[0] = EVM::dotp(a, b, n); });
+
+  //--- dotpc : sum of in1 * conj(in2) ---------------------------------------
+  printf("\ndotpc  (second input conjugated)\n");
+  checkDot("dotpc(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpc(a, b, n, r[0]); }, true);
+
+  checkDot("dotpc(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpc(a, b, n); }, true);
+
+  checkDot("dotpc(float,complex)", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { EVM::dotpc(a, b, n, r[0]); }, true);
+
+  checkDot("dotpc(float,complex) by value", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { r[0] = EVM::dotpc(a, b, n); }, true);
+
+  //--- pow2 / pow4 / pow8 : out = in^2, in^4, in^8 --------------------------
+  printf("\npow2 / pow4 / pow8\n");
+  check<float, float, float>("pow2(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::pow2(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAf[k]), 1); });
+
+  check<complex<float>, float, complex<float> >("pow2(complex)", TOL_EXACT,
+    Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::pow2(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAc[k]), 1); });
+
+  check<float, float, float>("pow4(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::pow4(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAf[k]), 2); });
+
+  check<complex<float>, float, complex<float> >("pow4(complex)", TOL_EXACT,
+    Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::pow4(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAc[k]), 2); });
+
+  check<float, float, float>("pow8(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::pow8(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAf[k]), 3); });
+
+  check<complex<float>, float, complex<float> >("pow8(complex)", TOL_EXACT,
+    Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::pow8(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAc[k]), 3); });
+
+  //--- magSq / mag : out = |in|^2, |in| -------------------------------------
+  printf("\nmagSq / mag\n");
+  check<complex<float>, float, float>("magSq(complex)", TOL_EXACT, Ac, nullF,
+    [](const complex<float>* a, const float*, int n, float* o)
+      { EVM::magSq(a, n, o); },
+    [](int k){ return cdbl(std::norm(toCdbl(gAc[k]))); });
+
+  check<float, float, float>("magSq(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::magSq(a, n, o); },
+    [](int k){ return powSq(toCdbl(gAf[k]), 1); });
+
+  check<float, float, float>("mag(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::mag(a, n, o); },
+    [](int k){ return cdbl(std::fabs(static_cast<double>(gAf[k]))); });
+
+  check<float, float, float>("abs(float)", TOL_EXACT, Af, nullF,
+    [](const float* a, const float*, int n, float* o) { EVM::abs(a, n, o); },
+    [](int k){ return cdbl(std::fabs(static_cast<double>(gAf[k]))); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");
