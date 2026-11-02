@@ -237,6 +237,8 @@
 #ifndef EFFICIENT_VECTOR_MATH_H
 #define EFFICIENT_VECTOR_MATH_H
 
+#define _USE_MATH_DEFINES // Must be defined BEFORE including cmath for M_PI
+#include <cmath>     // for M_PI
 #include <math.h>
 #include <cstdint>   // for int32_t
 #include <string>
@@ -1486,30 +1488,58 @@ namespace EVM
       const int len, float * const minOut, float * const maxOut)
   {
     if(len<=0) return;
-    __m512 ld1, ld2, mn;
+    // process 4 registers at once for each input buffer to pipeline stores
+    __m512 ld1a, ld1b, ld1c, ld1d;
+    __m512 ld2a, ld2b, ld2c, ld2d;
+    __m512 mn;  // min value
     int i = 0;
     // note: min_ps/max_ps return the second operand on a tie or NaN, so in2
     // goes first to match std::min/max(in1, in2) in the default version
+    // note: storing one register at a time to minOut then maxOut is about 2.5x
+    // slower when the outputs are not 64-byte aligned and don't fit in L1
+    // cache, instead store 4 registers to minOut and then 4 to maxOut
+    for(; i<len-63; i+=64) // process 4 registers (64 real elements)
+    {
+      // load all 4 registers first in case minOut or maxOut is the same
+      // buffer as in1 or in2
+      ld1a = _mm512_loadu_ps(&in1[i]);
+      ld1b = _mm512_loadu_ps(&in1[i+16]);
+      ld1c = _mm512_loadu_ps(&in1[i+32]);
+      ld1d = _mm512_loadu_ps(&in1[i+48]);
+      ld2a = _mm512_loadu_ps(&in2[i]);
+      ld2b = _mm512_loadu_ps(&in2[i+16]);
+      ld2c = _mm512_loadu_ps(&in2[i+32]);
+      ld2d = _mm512_loadu_ps(&in2[i+48]);
+      _mm512_storeu_ps(&minOut[i], _mm512_min_ps(ld2a, ld1a));
+      _mm512_storeu_ps(&minOut[i+16], _mm512_min_ps(ld2b, ld1b));
+      _mm512_storeu_ps(&minOut[i+32], _mm512_min_ps(ld2c, ld1c));
+      _mm512_storeu_ps(&minOut[i+48], _mm512_min_ps(ld2d, ld1d));
+      _mm512_storeu_ps(&maxOut[i], _mm512_max_ps(ld2a, ld1a));
+      _mm512_storeu_ps(&maxOut[i+16], _mm512_max_ps(ld2b, ld1b));
+      _mm512_storeu_ps(&maxOut[i+32], _mm512_max_ps(ld2c, ld1c));
+      _mm512_storeu_ps(&maxOut[i+48], _mm512_max_ps(ld2d, ld1d));
+    }
+    // 0-3 full registers remain and up to 1 partial register
     for(; i<len-15; i+=16) // process 16 real elements per register
     {
-      ld1 = _mm512_loadu_ps(&in1[i]);
-      ld2 = _mm512_loadu_ps(&in2[i]);
-      mn = _mm512_min_ps(ld2, ld1);
-      ld1 = _mm512_max_ps(ld2, ld1);
+      ld1a = _mm512_loadu_ps(&in1[i]);
+      ld2a = _mm512_loadu_ps(&in2[i]);
+      mn = _mm512_min_ps(ld2a, ld1a);
+      ld1a = _mm512_max_ps(ld2a, ld1a);
       _mm512_storeu_ps(&minOut[i], mn);
-      _mm512_storeu_ps(&maxOut[i], ld1);
+      _mm512_storeu_ps(&maxOut[i], ld1a);
     }
     // handle remaining elements (note len&15 == len%16)
     const int rem = len&15;
     if(rem)
     {
       const __mmask16 mk = mask16(rem);
-      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
-      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
-      mn = _mm512_min_ps(ld2, ld1);
-      ld1 = _mm512_max_ps(ld2, ld1);
+      ld1a = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2a = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      mn = _mm512_min_ps(ld2a, ld1a);
+      ld1a = _mm512_max_ps(ld2a, ld1a);
       _mm512_mask_storeu_ps(&minOut[i], mk, mn);
-      _mm512_mask_storeu_ps(&maxOut[i], mk, ld1);
+      _mm512_mask_storeu_ps(&maxOut[i], mk, ld1a);
     }
     return;
   }
@@ -1520,18 +1550,46 @@ namespace EVM
       const int len, float * const minOut, float * const maxOut)
   {
     if(len<=0) return;
-    __m256 ld1, ld2, mn;
+    // process 4 registers at once for each input buffer to pipeline stores
+    __m256 ld1a, ld1b, ld1c, ld1d;
+    __m256 ld2a, ld2b, ld2c, ld2d;
+    __m256 mn;  // min value
     int i = 0;
     // note: min_ps/max_ps return the second operand on a tie or NaN, so in2
     // goes first to match std::min/max(in1, in2) in the default version
+    // note: storing one register at a time to minOut then maxOut is about 3x
+    // slower when the outputs don't fit in L1 cache, instead store 4
+    // registers to minOut and then 4 to maxOut
+    for(; i<len-31; i+=32) // process 4 registers (32 real elements)
+    {
+      // load all 4 registers first in case minOut or maxOut is the same
+      // buffer as in1 or in2
+      ld1a = _mm256_loadu_ps(&in1[i]);
+      ld1b = _mm256_loadu_ps(&in1[i+8]);
+      ld1c = _mm256_loadu_ps(&in1[i+16]);
+      ld1d = _mm256_loadu_ps(&in1[i+24]);
+      ld2a = _mm256_loadu_ps(&in2[i]);
+      ld2b = _mm256_loadu_ps(&in2[i+8]);
+      ld2c = _mm256_loadu_ps(&in2[i+16]);
+      ld2d = _mm256_loadu_ps(&in2[i+24]);
+      _mm256_storeu_ps(&minOut[i], _mm256_min_ps(ld2a, ld1a));
+      _mm256_storeu_ps(&minOut[i+8], _mm256_min_ps(ld2b, ld1b));
+      _mm256_storeu_ps(&minOut[i+16], _mm256_min_ps(ld2c, ld1c));
+      _mm256_storeu_ps(&minOut[i+24], _mm256_min_ps(ld2d, ld1d));
+      _mm256_storeu_ps(&maxOut[i], _mm256_max_ps(ld2a, ld1a));
+      _mm256_storeu_ps(&maxOut[i+8], _mm256_max_ps(ld2b, ld1b));
+      _mm256_storeu_ps(&maxOut[i+16], _mm256_max_ps(ld2c, ld1c));
+      _mm256_storeu_ps(&maxOut[i+24], _mm256_max_ps(ld2d, ld1d));
+    }
+    // 0-3 full registers remain and up to 1 partial register
     for(; i<len-7; i+=8) // process 8 real elements per register
     {
-      ld1 = _mm256_loadu_ps(&in1[i]);
-      ld2 = _mm256_loadu_ps(&in2[i]);
-      mn = _mm256_min_ps(ld2, ld1);
-      ld1 = _mm256_max_ps(ld2, ld1);
+      ld1a = _mm256_loadu_ps(&in1[i]);
+      ld2a = _mm256_loadu_ps(&in2[i]);
+      mn = _mm256_min_ps(ld2a, ld1a);
+      ld1a = _mm256_max_ps(ld2a, ld1a);
       _mm256_storeu_ps(&minOut[i], mn);
-      _mm256_storeu_ps(&maxOut[i], ld1);
+      _mm256_storeu_ps(&maxOut[i], ld1a);
     }
     // handle remaining elements (note len&7 == len%8)
     const int rem = len&7;
@@ -1539,12 +1597,12 @@ namespace EVM
     {
       const __m256i msk = _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[rem]));
-      ld1 = _mm256_maskload_ps(&in1[i], msk);
-      ld2 = _mm256_maskload_ps(&in2[i], msk);
-      mn = _mm256_min_ps(ld2, ld1);
-      ld1 = _mm256_max_ps(ld2, ld1);
+      ld1a = _mm256_maskload_ps(&in1[i], msk);
+      ld2a = _mm256_maskload_ps(&in2[i], msk);
+      mn = _mm256_min_ps(ld2a, ld1a);
+      ld1a = _mm256_max_ps(ld2a, ld1a);
       _mm256_maskstore_ps(&minOut[i], msk, mn);
-      _mm256_maskstore_ps(&maxOut[i], msk, ld1);
+      _mm256_maskstore_ps(&maxOut[i], msk, ld1a);
     }
     return;
   }
@@ -1703,54 +1761,86 @@ namespace EVM
       const int len, float * const out)
   {
     if(nbufs<=0 || len<=0) return;
-    __m512 val;     // current min value
-    __m512 absVal;  // absolute value of current min
-    __m512 ld;      // current loaded register
-    __m512 absLd;   // absolute value of current loaded register
-    __mmask16 lt;   // comparison of the two absolute value registers
+    // use a 2 register loop for independent compare loops
+    __m512 ld1, absLd1, val1, absVal1;
+    __m512 ld2, absLd2, val2, absVal2;
+    __mmask16 lt1, lt2;
     // constant to make the sign bit positive
     const __m512i pos = _mm512_set1_epi32(0x7fffffff);
     int i = 0;
     // note: a strict less-than so a tie keeps the value from the earlier
     // buffer, as in the default version
-    for(; i<len-15; i+=16) // process 16 real elements per register
+    // note: 2 registers per pass over the buffers halves the loop overhead
+    // and gives 2 independent compare chains
+    for(; i<len-31; i+=32) // process 2 registers (32 real elements)
     {
-      val = _mm512_loadu_ps(&in[0][i]);
+      val1 = _mm512_loadu_ps(&in[0][i]);
+      val2 = _mm512_loadu_ps(&in[0][i+16]);
       // force sign bit positive, note the casting is done to avoid requiring
       // the AVX512DQ instruction _mm512_and_ps (casting should be free)
-      absVal = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val),
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
+          pos));
+      absVal2 = _mm512_castsi512_ps(_mm512_and_si512(
+          _mm512_castps_si512(val2), pos));
+      for(int j=1; j<nbufs; ++j)
+      {
+        ld1 = _mm512_loadu_ps(&in[j][i]);
+        // load both registers before using either one, otherwise g++ reads
+        // ld from memory a second time
+        ld2 = _mm512_loadu_ps(&in[j][i+16]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
+            pos));
+        lt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, lt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, lt1, ld1);
+        absLd2 = _mm512_castsi512_ps(_mm512_and_si512(
+            _mm512_castps_si512(ld2), pos));
+        lt2 = _mm512_cmp_ps_mask(absLd2, absVal2, _CMP_LT_OQ);
+        absVal2 = _mm512_mask_mov_ps(absVal2, lt2, absLd2);
+        val2 = _mm512_mask_mov_ps(val2, lt2, ld2);
+      }
+      _mm512_storeu_ps(&out[i], val1);
+      _mm512_storeu_ps(&out[i+16], val2);
+    }
+    // 0-1 full registers remain and up to 1 partial register
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      val1 = _mm512_loadu_ps(&in[0][i]);
+      // force sign bit positive, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_and_ps (casting should be free)
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
           pos));
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm512_loadu_ps(&in[j][i]);
-        absLd = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld),
+        ld1 = _mm512_loadu_ps(&in[j][i]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
             pos));
-        lt = _mm512_cmp_ps_mask(absLd, absVal, _CMP_LT_OQ); // |ld| < |val|
-        absVal = _mm512_mask_mov_ps(absVal, lt, absLd);
-        val = _mm512_mask_mov_ps(val, lt, ld);
+        lt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, lt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, lt1, ld1);
       }
-      _mm512_storeu_ps(&out[i], val);
+      _mm512_storeu_ps(&out[i], val1);
     }
     // handle remaining elements (note len&15 == len%16)
     const int rem = len&15;
     if(rem)
     {
       const __mmask16 mk = mask16(rem);
-      val = _mm512_maskz_loadu_ps(mk, &in[0][i]);
+      val1 = _mm512_maskz_loadu_ps(mk, &in[0][i]);
       // force sign bit positive, note the casting is done to avoid requiring
       // the AVX512DQ instruction _mm512_and_ps (casting should be free)
-      absVal = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val),
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
           pos));
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm512_maskz_loadu_ps(mk, &in[j][i]);
-        absLd = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld),
+        ld1 = _mm512_maskz_loadu_ps(mk, &in[j][i]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
             pos));
-        lt = _mm512_cmp_ps_mask(absLd, absVal, _CMP_LT_OQ); // |ld| < |val|
-        absVal = _mm512_mask_mov_ps(absVal, lt, absLd);
-        val = _mm512_mask_mov_ps(val, lt, ld);
+        lt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, lt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, lt1, ld1);
       }
-      _mm512_mask_storeu_ps(&out[i], mk, val);
+      _mm512_mask_storeu_ps(&out[i], mk, val1);
     }
     return;
   }
@@ -1761,30 +1851,59 @@ namespace EVM
       const int len, float * const out)
   {
     if(nbufs<=0 || len<=0) return;
-    __m256 val;     // current min value
-    __m256 absVal;  // absolute value of current min
-    __m256 ld;      // current loaded register
-    __m256 absLd;   // absolute value of current loaded register
-    __m256 lt;      // comparison of the two absolute value registers
+    // use a 2 register loop for independent compare loops
+    __m256 ld1, absLd1, val1, absVal1, lt1;
+    __m256 ld2, absLd2, val2, absVal2, lt2;
     // constant to make the sign bit positive
     const __m256 pos = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
     int i = 0;
     // note: a strict less-than so a tie keeps the value from the earlier
     // buffer, as in the default version
-    for(; i<len-7; i+=8) // process 8 real elements per register
+    // note: 2 registers per pass over the buffers halves the loop overhead
+    // and gives 2 independent compare chains
+    for(; i<len-15; i+=16) // process 2 registers (16 real elements)
     {
-      val = _mm256_loadu_ps(&in[0][i]);
-      absVal = _mm256_and_ps(val, pos);
+      val1 = _mm256_loadu_ps(&in[0][i]);
+      val2 = _mm256_loadu_ps(&in[0][i+8]);
+      absVal1 = _mm256_and_ps(val1, pos);
+      absVal2 = _mm256_and_ps(val2, pos);
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm256_loadu_ps(&in[j][i]);
-        absLd = _mm256_and_ps(ld, pos);
-        lt = _mm256_cmp_ps(absLd, absVal, _CMP_LT_OQ); // |ld| < |val|
-        absVal = _mm256_min_ps(absLd, absVal); // same choice as lt
+        ld1 = _mm256_loadu_ps(&in[j][i]);
+        // load both registers before using either one, otherwise g++ reads
+        // ld from memory a second time
+        ld2 = _mm256_loadu_ps(&in[j][i+8]);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        lt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm256_min_ps(absLd1, absVal1); // same choice as lt
         // lt? ld : val (avoids _mm256_blendv_ps, see setUnusedToOne)
-        val = _mm256_or_ps(_mm256_and_ps(lt, ld), _mm256_andnot_ps(lt, val));
+        val1 = _mm256_or_ps(_mm256_and_ps(lt1, ld1),
+            _mm256_andnot_ps(lt1, val1));
+        absLd2 = _mm256_and_ps(ld2, pos);
+        lt2 = _mm256_cmp_ps(absLd2, absVal2, _CMP_LT_OQ);
+        absVal2 = _mm256_min_ps(absLd2, absVal2);
+        val2 = _mm256_or_ps(_mm256_and_ps(lt2, ld2),
+            _mm256_andnot_ps(lt2, val2));
       }
-      _mm256_storeu_ps(&out[i], val);
+      _mm256_storeu_ps(&out[i], val1);
+      _mm256_storeu_ps(&out[i+8], val2);
+    }
+    // 0-1 full registers remain and up to 1 partial register
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      val1 = _mm256_loadu_ps(&in[0][i]);
+      absVal1 = _mm256_and_ps(val1, pos);
+      for(int j=1; j<nbufs; ++j)
+      {
+        ld1 = _mm256_loadu_ps(&in[j][i]);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        lt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm256_min_ps(absLd1, absVal1); // same choice as lt
+        // lt1? ld1 : val1 (avoids _mm256_blendv_ps, see setUnusedToOne)
+        val1 = _mm256_or_ps(_mm256_and_ps(lt1, ld1),
+            _mm256_andnot_ps(lt1, val1));
+      }
+      _mm256_storeu_ps(&out[i], val1);
     }
     // handle remaining elements (note len&7 == len%8)
     const int rem = len&7;
@@ -1792,18 +1911,19 @@ namespace EVM
     {
       const __m256i msk = _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[rem]));
-      val = _mm256_maskload_ps(&in[0][i], msk);
-      absVal = _mm256_and_ps(val, pos);
+      val1 = _mm256_maskload_ps(&in[0][i], msk);
+      absVal1 = _mm256_and_ps(val1, pos);
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm256_maskload_ps(&in[j][i], msk);
-        absLd = _mm256_and_ps(ld, pos);
-        lt = _mm256_cmp_ps(absLd, absVal, _CMP_LT_OQ); // |ld| < |val|
-        absVal = _mm256_min_ps(absLd, absVal); // same choice as lt
+        ld1 = _mm256_maskload_ps(&in[j][i], msk);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        lt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_LT_OQ); // |ld| < |val|
+        absVal1 = _mm256_min_ps(absLd1, absVal1); // same choice as lt
         // lt? ld : val (avoids _mm256_blendv_ps, see setUnusedToOne)
-        val = _mm256_or_ps(_mm256_and_ps(lt, ld), _mm256_andnot_ps(lt, val));
+        val1 = _mm256_or_ps(_mm256_and_ps(lt1, ld1),
+            _mm256_andnot_ps(lt1, val1));
       }
-      _mm256_maskstore_ps(&out[i], msk, val);
+      _mm256_maskstore_ps(&out[i], msk, val1);
     }
     return;
   }
@@ -1843,54 +1963,86 @@ namespace EVM
       const int len, float * const out)
   {
     if(nbufs<=0 || len<=0) return;
-    __m512 val;     // current max value
-    __m512 absVal;  // absolute value of current max
-    __m512 ld;      // current loaded register
-    __m512 absLd;   // absolute value of current loaded register
-    __mmask16 gt;   // comparison of the two absolute value registers
+    // use a 2 register loop for independent compare loops
+    __m512 ld1, absLd1, val1, absVal1;
+    __m512 ld2, absLd2, val2, absVal2;
+    __mmask16 gt1, gt2;
     // constant to make the sign bit positive
     const __m512i pos = _mm512_set1_epi32(0x7fffffff);
     int i = 0;
     // note: a strict greater-than so a tie keeps the value from the earlier
     // buffer, as in the default version
-    for(; i<len-15; i+=16) // process 16 real elements per register
+    // note: 2 registers per pass over the buffers halves the loop overhead
+    // and gives 2 independent compare chains
+    for(; i<len-31; i+=32) // process 2 registers (32 real elements)
     {
-      val = _mm512_loadu_ps(&in[0][i]);
+      val1 = _mm512_loadu_ps(&in[0][i]);
+      val2 = _mm512_loadu_ps(&in[0][i+16]);
       // force sign bit positive, note the casting is done to avoid requiring
       // the AVX512DQ instruction _mm512_and_ps (casting should be free)
-      absVal = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val),
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
+          pos));
+      absVal2 = _mm512_castsi512_ps(_mm512_and_si512(
+          _mm512_castps_si512(val2), pos));
+      for(int j=1; j<nbufs; ++j)
+      {
+        ld1 = _mm512_loadu_ps(&in[j][i]);
+        // load both registers before using either one, otherwise g++ reads
+        // ld from memory a second time
+        ld2 = _mm512_loadu_ps(&in[j][i+16]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
+            pos));
+        gt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, gt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, gt1, ld1);
+        absLd2 = _mm512_castsi512_ps(_mm512_and_si512(
+            _mm512_castps_si512(ld2), pos));
+        gt2 = _mm512_cmp_ps_mask(absLd2, absVal2, _CMP_GT_OQ);
+        absVal2 = _mm512_mask_mov_ps(absVal2, gt2, absLd2);
+        val2 = _mm512_mask_mov_ps(val2, gt2, ld2);
+      }
+      _mm512_storeu_ps(&out[i], val1);
+      _mm512_storeu_ps(&out[i+16], val2);
+    }
+    // 0-1 full registers remain and up to 1 partial register
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      val1 = _mm512_loadu_ps(&in[0][i]);
+      // force sign bit positive, note the casting is done to avoid requiring
+      // the AVX512DQ instruction _mm512_and_ps (casting should be free)
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
           pos));
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm512_loadu_ps(&in[j][i]);
-        absLd = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld),
+        ld1 = _mm512_loadu_ps(&in[j][i]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
             pos));
-        gt = _mm512_cmp_ps_mask(absLd, absVal, _CMP_GT_OQ); // |ld| > |val|
-        absVal = _mm512_mask_mov_ps(absVal, gt, absLd);
-        val = _mm512_mask_mov_ps(val, gt, ld);
+        gt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, gt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, gt1, ld1);
       }
-      _mm512_storeu_ps(&out[i], val);
+      _mm512_storeu_ps(&out[i], val1);
     }
     // handle remaining elements (note len&15 == len%16)
     const int rem = len&15;
     if(rem)
     {
       const __mmask16 mk = mask16(rem);
-      val = _mm512_maskz_loadu_ps(mk, &in[0][i]);
+      val1 = _mm512_maskz_loadu_ps(mk, &in[0][i]);
       // force sign bit positive, note the casting is done to avoid requiring
       // the AVX512DQ instruction _mm512_and_ps (casting should be free)
-      absVal = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val),
+      absVal1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(val1),
           pos));
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm512_maskz_loadu_ps(mk, &in[j][i]);
-        absLd = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld),
+        ld1 = _mm512_maskz_loadu_ps(mk, &in[j][i]);
+        absLd1 = _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(ld1),
             pos));
-        gt = _mm512_cmp_ps_mask(absLd, absVal, _CMP_GT_OQ); // |ld| > |val|
-        absVal = _mm512_mask_mov_ps(absVal, gt, absLd);
-        val = _mm512_mask_mov_ps(val, gt, ld);
+        gt1 = _mm512_cmp_ps_mask(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm512_mask_mov_ps(absVal1, gt1, absLd1);
+        val1 = _mm512_mask_mov_ps(val1, gt1, ld1);
       }
-      _mm512_mask_storeu_ps(&out[i], mk, val);
+      _mm512_mask_storeu_ps(&out[i], mk, val1);
     }
     return;
   }
@@ -1901,30 +2053,59 @@ namespace EVM
       const int len, float * const out)
   {
     if(nbufs<=0 || len<=0) return;
-    __m256 val;     // current max value
-    __m256 absVal;  // absolute value of current max
-    __m256 ld;      // current loaded register
-    __m256 absLd;   // absolute value of current loaded register
-    __m256 gt;      // comparison of the two absolute value registers
+    // use a 2 register loop for independent compare loops
+    __m256 ld1, absLd1, val1, absVal1, gt1;
+    __m256 ld2, absLd2, val2, absVal2, gt2;
     // constant to make the sign bit positive
     const __m256 pos = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
     int i = 0;
     // note: a strict greater-than so a tie keeps the value from the earlier
     // buffer, as in the default version
-    for(; i<len-7; i+=8) // process 8 real elements per register
+    // note: 2 registers per pass over the buffers halves the loop overhead
+    // and gives 2 independent compare chains
+    for(; i<len-15; i+=16) // process 2 registers (16 real elements)
     {
-      val = _mm256_loadu_ps(&in[0][i]);
-      absVal = _mm256_and_ps(val, pos);
+      val1 = _mm256_loadu_ps(&in[0][i]);
+      val2 = _mm256_loadu_ps(&in[0][i+8]);
+      absVal1 = _mm256_and_ps(val1, pos);
+      absVal2 = _mm256_and_ps(val2, pos);
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm256_loadu_ps(&in[j][i]);
-        absLd = _mm256_and_ps(ld, pos);
-        gt = _mm256_cmp_ps(absLd, absVal, _CMP_GT_OQ); // |ld| > |val|
-        absVal = _mm256_max_ps(absLd, absVal); // same choice as gt
+        ld1 = _mm256_loadu_ps(&in[j][i]);
+        // load both registers before using either one, otherwise g++ reads
+        // ld from memory a second time
+        ld2 = _mm256_loadu_ps(&in[j][i+8]);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        gt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm256_max_ps(absLd1, absVal1); // same choice as gt
         // gt? ld : val (avoids _mm256_blendv_ps, see setUnusedToOne)
-        val = _mm256_or_ps(_mm256_and_ps(gt, ld), _mm256_andnot_ps(gt, val));
+        val1 = _mm256_or_ps(_mm256_and_ps(gt1, ld1),
+            _mm256_andnot_ps(gt1, val1));
+        absLd2 = _mm256_and_ps(ld2, pos);
+        gt2 = _mm256_cmp_ps(absLd2, absVal2, _CMP_GT_OQ);
+        absVal2 = _mm256_max_ps(absLd2, absVal2);
+        val2 = _mm256_or_ps(_mm256_and_ps(gt2, ld2),
+            _mm256_andnot_ps(gt2, val2));
       }
-      _mm256_storeu_ps(&out[i], val);
+      _mm256_storeu_ps(&out[i], val1);
+      _mm256_storeu_ps(&out[i+8], val2);
+    }
+    // 0-1 full registers remain and up to 1 partial register
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      val1 = _mm256_loadu_ps(&in[0][i]);
+      absVal1 = _mm256_and_ps(val1, pos);
+      for(int j=1; j<nbufs; ++j)
+      {
+        ld1 = _mm256_loadu_ps(&in[j][i]);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        gt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm256_max_ps(absLd1, absVal1); // same choice as gt
+        // gt1? ld1 : val1 (avoids _mm256_blendv_ps, see setUnusedToOne)
+        val1 = _mm256_or_ps(_mm256_and_ps(gt1, ld1),
+            _mm256_andnot_ps(gt1, val1));
+      }
+      _mm256_storeu_ps(&out[i], val1);
     }
     // handle remaining elements (note len&7 == len%8)
     const int rem = len&7;
@@ -1932,18 +2113,19 @@ namespace EVM
     {
       const __m256i msk = _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[rem]));
-      val = _mm256_maskload_ps(&in[0][i], msk);
-      absVal = _mm256_and_ps(val, pos);
+      val1 = _mm256_maskload_ps(&in[0][i], msk);
+      absVal1 = _mm256_and_ps(val1, pos);
       for(int j=1; j<nbufs; ++j)
       {
-        ld = _mm256_maskload_ps(&in[j][i], msk);
-        absLd = _mm256_and_ps(ld, pos);
-        gt = _mm256_cmp_ps(absLd, absVal, _CMP_GT_OQ); // |ld| > |val|
-        absVal = _mm256_max_ps(absLd, absVal); // same choice as gt
+        ld1 = _mm256_maskload_ps(&in[j][i], msk);
+        absLd1 = _mm256_and_ps(ld1, pos);
+        gt1 = _mm256_cmp_ps(absLd1, absVal1, _CMP_GT_OQ); // |ld| > |val|
+        absVal1 = _mm256_max_ps(absLd1, absVal1); // same choice as gt
         // gt? ld : val (avoids _mm256_blendv_ps, see setUnusedToOne)
-        val = _mm256_or_ps(_mm256_and_ps(gt, ld), _mm256_andnot_ps(gt, val));
+        val1 = _mm256_or_ps(_mm256_and_ps(gt1, ld1),
+            _mm256_andnot_ps(gt1, val1));
       }
-      _mm256_maskstore_ps(&out[i], msk, val);
+      _mm256_maskstore_ps(&out[i], msk, val1);
     }
     return;
   }
