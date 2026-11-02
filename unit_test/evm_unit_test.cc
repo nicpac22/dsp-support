@@ -69,6 +69,7 @@
 #include <string>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -92,6 +93,10 @@ static const int GUARD  = 32;
 static const double TOL_EXACT = 1.0e-6;   // true multiply/divide   (~1.7e-07)
 static const double TOL_NR    = 5.0e-6;   // reciprocal + 1x Newton (~2.5e-07)
 static const double TOL_RCP   = 2.0e-3;   // bare reciprocal        (~2.9e-04)
+static const double TOL_CMP   = 0.0;      // comparison/selection   (exact)
+
+// Number of input buffers for signedAbsMin/signedAbsMax.
+static const int NBUF = 5;
 
 // Most failing elements to print per function before summarising the rest.
 static const int MAX_REPORT = 8;
@@ -102,8 +107,11 @@ static const int MAX_REPORT = 8;
 static std::mt19937                 gRng;
 static std::vector<float>           gAf, gBf;   // real input vectors
 static std::vector<complex<float> > gAc, gBc;   // complex input vectors
+static std::vector<complex<float> > gZc;        // gAc with zeros, see below
 static float                        gSf;        // real scale factor
 static complex<float>               gSc;        // complex scale factor
+static std::vector<std::vector<float> > gNf;    // comparison inputs, see below
+static float                        gTh;        // comparison threshold
 
 static float randReal()
 {
@@ -133,20 +141,43 @@ static complex<float> randDivisorComplex()
   return v;
 }
 
+// Comparison inputs are a multiple of 0.5 in [-2,2] half of the time, so ties
+// are common: elements equal to the threshold, and equal magnitudes of
+// opposite sign, which is where a > in place of >= or a tie going to the wrong
+// buffer shows up.
+static float randTie()
+{
+  if(std::uniform_int_distribution<int>(0, 1)(gRng))
+    return 0.5f*std::uniform_int_distribution<int>(-4, 4)(gRng);
+  return randReal();
+}
+
 static void generateData(unsigned int seed)
 {
   gRng.seed(seed);
   gAf.resize(MAXLEN);  gBf.resize(MAXLEN);
   gAc.resize(MAXLEN);  gBc.resize(MAXLEN);
+  gZc.resize(MAXLEN);
   for(int i=0; i<MAXLEN; ++i)
   {
     gAf[i] = randReal();
     gBf[i] = randDivisorReal();
     gAc[i] = randComplex();
     gBc[i] = randDivisorComplex();
+    // input for the complex magnitudes with every third element zero (3 is
+    // coprime to the register widths, so the zeros visit every lane): a
+    // magnitude computed as x*rsqrt(x) gives 0*inf = NaN at zero unless the
+    // kernel guards against it
+    gZc[i] = (i%3 == 0) ? complex<float>(0.0f, 0.0f) : gAc[i];
   }
   gSf = randDivisorReal();
   gSc = randDivisorComplex();
+  // drawn after the inputs above so that a seed still gives the same values
+  // for them
+  gNf.assign(NBUF, std::vector<float>(MAXLEN));
+  for(int j=0; j<NBUF; ++j)
+    for(int i=0; i<MAXLEN; ++i) gNf[j][i] = randTie();
+  gTh = 0.5f*std::uniform_int_distribution<int>(-3, 3)(gRng);
 }
 
 //==============================================================================
@@ -158,14 +189,21 @@ template<> struct IsComplex<complex<float> >  { static const bool value = true; 
 static cdbl toCdbl(const float v)          { return cdbl(v, 0.0); }
 static cdbl toCdbl(const complex<float> v) { return cdbl(v.real(), v.imag()); }
 
+// The sentinel is a quiet NaN with a distinctive payload and is matched by its
+// bits, so a NaN a kernel computes (0*inf, 0/0) is reported as a wrong value
+// or a stray write rather than taken for an element that was never touched.
+static const uint32_t SENTINEL_BITS = 0x7fc0deadu;
+
 template<class T> static T sentinel();
 template<> float sentinel<float>()
 {
-  return std::numeric_limits<float>::quiet_NaN();
+  float f;
+  std::memcpy(&f, &SENTINEL_BITS, sizeof(f));
+  return f;
 }
 template<> complex<float> sentinel<complex<float> >()
 {
-  const float n = std::numeric_limits<float>::quiet_NaN();
+  const float n = sentinel<float>();
   return complex<float>(n, n);
 }
 
@@ -176,10 +214,48 @@ static cdbl powSq(cdbl z, const int squarings)
   return z;
 }
 
-static bool isSentinel(const float v) { return std::isnan(v); }
+// element k of the first nbufs comparison inputs with the smallest (or largest)
+// magnitude, the earliest buffer winning a tie, the baseline for signedAbsMin
+// and signedAbsMax
+static cdbl signedAbsRef(const int k, const int nbufs, const bool wantMax)
+{
+  double val = gNf[0][k];
+  for(int j=1; j<nbufs; ++j)
+  {
+    const double v = gNf[j][k];
+    if(wantMax ? (std::fabs(v) > std::fabs(val))
+               : (std::fabs(v) < std::fabs(val))) val = v;
+  }
+  return cdbl(val);
+}
+
+// zneg and zpos work in place.  They are run on a copy of the input whose
+// elements past the end hold a value the function would change (-1 for zneg,
+// 1 for zpos), since a stray write over the sentinel would put back the same
+// NaN; the results, and any element past the end that changed, are passed on
+// in out.
+static void runZeroInPlace(const bool neg, const float* const in, const int len,
+                           float* const out)
+{
+  const float guard = neg ? -1.0f : 1.0f;
+  const int   valid = (len > 0) ? len : 0;
+  std::vector<float> buf(MAXLEN + GUARD, guard);
+  for(int k=0; k<valid; ++k) buf[k] = in[k];
+  if(neg) EVM::zneg(buf.data(), len);
+  else    EVM::zpos(buf.data(), len);
+  for(int k=0; k<valid; ++k) out[k] = buf[k];
+  for(int k=valid; k<MAXLEN+GUARD; ++k) if(buf[k] != guard) out[k] = buf[k];
+}
+
+static bool isSentinel(const float v)
+{
+  uint32_t b;
+  std::memcpy(&b, &v, sizeof(b));
+  return b == SENTINEL_BITS;
+}
 static bool isSentinel(const complex<float> v)
 {
-  return std::isnan(v.real()) && std::isnan(v.imag());
+  return isSentinel(v.real()) && isSentinel(v.imag());
 }
 
 // Render a value the way its type reads: scalars plain, complex as (re,im).
@@ -480,6 +556,219 @@ static void checkDot(const char* name, const TA* const aBuf,
 }
 
 //==============================================================================
+// Two-output test driver (minMax of two buffers)
+//
+//   runEvm(a, b, len, o1, o2)  calls the EVM function under test
+//   base1(k), base2(k)         return the expected values of o1[k] and o2[k]
+//
+// Both outputs must match the baseline exactly.  Each output is run in its own
+// buffer and on top of in1 or in2 (the two outputs never share a buffer): a
+// kernel that stores the first output before it has read everything the
+// second one needs only fails when they alias.  All four buffers are checked
+// for writes past the requested length.  Past the end in1 holds 1e30 and in2
+// holds -1e30 rather than the sentinel, since the min or max of two sentinels
+// is the sentinel again and a stray write of it would go unseen.
+//==============================================================================
+template<class FEVM, class F1, class F2>
+static void checkPair(const char* name, const float* const aBuf,
+                      const float* const bBuf, FEVM runEvm, F1 base1, F2 base2)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0, nstray = 0;
+
+  // buffers 0 and 1 hold in1 and in2, 2 and 3 are the outputs' own buffers
+  std::vector<std::vector<float> > buf(4, std::vector<float>(MAXLEN + GUARD));
+  const float fill[4] = {1.0e30f, -1.0e30f, sentinel<float>(),
+                         sentinel<float>()};
+  const char* const where[]   = {"in1", "in2", "own buffer"};
+  const char* const bufName[] = {"in1", "in2", "out1", "out2"};
+
+  // o1 and o2 each go on top of in1 (0) or in2 (1), or in their own buffer (2)
+  for(int m1=0; m1<3; ++m1)
+  for(int m2=0; m2<3; ++m2)
+  {
+    if(m1 == m2 && m1 != 2) continue;
+    float* const o1 = buf[(m1 == 2) ? 2 : m1].data();
+    float* const o2 = buf[(m2 == 2) ? 3 : m2].data();
+
+    for(size_t li=0; li<gLengths.size(); ++li)
+    {
+      const int len   = gLengths[li];
+      const int valid = (len > 0) ? len : 0;
+      for(int k=0; k<MAXLEN+GUARD; ++k)
+      {
+        buf[0][k] = (k < valid) ? aBuf[k] : fill[0];
+        buf[1][k] = (k < valid) ? bBuf[k] : fill[1];
+        buf[2][k] = fill[2];
+        buf[3][k] = fill[3];
+      }
+      runEvm(buf[0].data(), buf[1].data(), len, o1, o2);
+
+      // --- values ---
+      for(int k=0; k<valid; ++k)
+      {
+        const double got[2]  = {o1[k], o2[k]};
+        const double want[2] = {base1(k).real(), base2(k).real()};
+        for(int n=0; n<2; ++n)
+        {
+          ++compared;
+          if(got[n] == want[n]) continue;
+          ++nbad;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            printf("      len=%-5d element %-5d out%d=%.9g baseline=%.9g "
+                   "[out1 on %s, out2 on %s]\n", len, k, n+1, got[n],
+                   want[n], where[m1], where[m2]);
+          }
+        }
+      }
+
+      // --- writes past the requested length (covers negative len too) ---
+      for(int b=0; b<4; ++b)
+      {
+        for(int k=valid; k<MAXLEN+GUARD; ++k)
+        {
+          if(std::memcmp(&buf[b][k], &fill[b], sizeof(float)) == 0) continue;
+          ++nstray;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            printf("      len=%-5d element %-5d WROTE PAST END of %s "
+                   "evm=%.9g [out1 on %s, out2 on %s]\n", len, k,
+                   bufName[b], buf[b][k], where[m1], where[m2]);
+          }
+        }
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, exact", name, pass ? "PASS" : "FAIL",
+         compared);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
+}
+
+//==============================================================================
+// minMax reduction test driver
+//
+// The result must equal the baseline exactly.  Every length is run with noInit
+// false, and with noInit true from starting values inside, outside and the
+// wrong way round relative to the data range, on the data as given, made all
+// positive and made all negative: a kernel that let the zeros a masked load
+// leaves in the unused lanes take part would return 0 as the minimum of an
+// all-positive buffer or the maximum of an all-negative one.  Then a single
+// minimum, and then a single maximum, is put at every position of every
+// length, so that each lane of every accumulator and of the partial register
+// has to be the one that comes out.  The input is copied into a buffer whose
+// elements past the end alternate between -1e30 and 1e30, so a read past the
+// end changes the result.  Negative and zero lengths must leave minOut and
+// maxOut untouched.
+//==============================================================================
+static void checkMinMax(const char* name, const float* const aBuf)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  std::vector<float> a(MAXLEN + GUARD);
+
+  // starting values when noInit is true, case 0 runs with noInit false
+  const float initMin[] = {0.0f, -0.5f, -3.0f,  3.0f};
+  const float initMax[] = {0.0f,  0.5f,  3.0f, -3.0f};
+  const char* const dataName[] = {"as given", "all positive", "all negative",
+                                  "single min/max"};
+
+  // runs minMax over a with noInit from case init and checks the result
+  auto runCase = [&](const int len, const int init, const int data,
+                     const int at)
+  {
+    const int  valid  = (len > 0) ? len : 0;
+    const bool noInit = (init != 0);
+    // without noInit the outputs start as the sentinel, which a negative or
+    // zero length must leave in place
+    float mn = noInit ? initMin[init] : sentinel<float>();
+    float mx = noInit ? initMax[init] : sentinel<float>();
+    float wantMin = mn;
+    float wantMax = mx;
+    if(valid > 0)
+    {
+      wantMin = noInit ? std::min(initMin[init], a[0]) : a[0];
+      wantMax = noInit ? std::max(initMax[init], a[0]) : a[0];
+      for(int k=1; k<valid; ++k)
+      {
+        wantMin = std::min(wantMin, a[k]);
+        wantMax = std::max(wantMax, a[k]);
+      }
+    }
+    EVM::minMax(a.data(), len, mn, mx, noInit);
+    ++compared;
+
+    const bool ok = (valid == 0 && !noInit) ?
+        (isSentinel(mn) && isSentinel(mx)) :
+        (mn == wantMin && mx == wantMax);
+    if(ok) return;
+    ++nbad;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d evm min,max=%.9g,%.9g baseline=%.9g,%.9g "
+             "[%s", len, mn, mx, wantMin, wantMax, dataName[data]);
+      if(at >= 0) printf(" at element %d", at);
+      printf(", noInit=%d]\n", noInit ? 1 : 0);
+    }
+  };
+
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len   = gLengths[li];
+    const int valid = (len > 0) ? len : 0;
+    for(int data=0; data<4; ++data)
+    {
+      for(int k=0; k<MAXLEN+GUARD; ++k)
+      {
+        if(k >= valid) a[k] = (k&1) ? 1.0e30f : -1.0e30f;
+        else if(data == 1) a[k] = std::fabs(aBuf[k]) + 0.5f;
+        else if(data == 2) a[k] = -std::fabs(aBuf[k]) - 0.5f;
+        else               a[k] = aBuf[k];
+      }
+      if(data < 3)
+      {
+        for(int init=0; init<4; ++init) runCase(len, init, data, -1);
+        continue;
+      }
+      // a minimum then a maximum outside the data range at each position
+      for(int at=0; at<valid; ++at)
+      {
+        for(int s=0; s<2; ++s)
+        {
+          a[at] = s ? 5.0f : -5.0f;
+          runCase(len, 0, data, at);
+        }
+        a[at] = aBuf[at];
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, exact", name, pass ? "PASS" : "FAIL",
+         compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
   const unsigned int seed = (argc > 1)
@@ -499,7 +788,106 @@ int main(int argc, char** argv)
   const float*          Bf = gBf.data();
   const complex<float>* Ac = gAc.data();
   const complex<float>* Bc = gBc.data();
+  const complex<float>* Zc = gZc.data();
   const float*          nullF = NULL;
+  const float*          N0 = gNf[0].data();
+  const float*          N1 = gNf[1].data();
+  const float*          N2 = gNf[2].data();
+
+  //--- min / max / minMax ---------------------------------------------------
+  printf("\nmin / max / minMax\n");
+  check<float, float, float>("min(float,float)", TOL_CMP, N0, N1,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::min(a, b, n, o); },
+    [](int k){ return cdbl(std::min(gNf[0][k], gNf[1][k])); });
+
+  check<float, float, float>("max(float,float)", TOL_CMP, N0, N1,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::max(a, b, n, o); },
+    [](int k){ return cdbl(std::max(gNf[0][k], gNf[1][k])); });
+
+  checkPair("minMax(float,float)", N0, N1,
+    [](const float* a, const float* b, int n, float* mn, float* mx)
+      { EVM::minMax(a, b, n, mn, mx); },
+    [](int k){ return cdbl(std::min(gNf[0][k], gNf[1][k])); },
+    [](int k){ return cdbl(std::max(gNf[0][k], gNf[1][k])); });
+
+  // the reduction uses Af, the many ties in the comparison inputs would hide
+  // a lost accumulator
+  checkMinMax("minMax(float) of a buffer", Af);
+
+  //--- zneg / zpos : negative or positive values set to zero ----------------
+  printf("\nzneg / zpos\n");
+  check<float, float, float>("zneg(float)", TOL_CMP, N0, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { runZeroInPlace(true, a, n, o); },
+    [](int k){ return cdbl(std::max(gNf[0][k], 0.0f)); });
+
+  check<float, float, float>("zpos(float)", TOL_CMP, N0, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { runZeroInPlace(false, a, n, o); },
+    [](int k){ return cdbl(std::min(gNf[0][k], 0.0f)); });
+
+  //--- signedAbsMin / signedAbsMax : signed value of min/max magnitude ------
+  // in[0] and in[1] are the a and b buffers, so the in-place modes put out on
+  // top of the first and second inputs, the rest come straight from gNf
+  printf("\nsignedAbsMin / signedAbsMax\n");
+  const int nbufsTested[] = {1, 2, NBUF};
+  for(int w=0; w<2; ++w) // 0 = signedAbsMin, 1 = signedAbsMax
+  {
+    for(int t=0; t<3; ++t)
+    {
+      const int nb = nbufsTested[t];
+      char name[64];
+      snprintf(name, sizeof(name), "%s(%d buffer%s)",
+               w ? "signedAbsMax" : "signedAbsMin", nb, (nb > 1) ? "s" : "");
+      check<float, float, float>(name, TOL_CMP, N0, (nb > 1) ? N1 : nullF,
+        [nb, w](const float* a, const float* b, int n, float* o)
+          { const float* in[NBUF];
+            in[0] = a;
+            in[1] = b;
+            for(int j=2; j<NBUF; ++j) in[j] = gNf[j].data();
+            if(w) EVM::signedAbsMax(in, nb, n, o);
+            else  EVM::signedAbsMin(in, nb, n, o); },
+        [nb, w](int k){ return signedAbsRef(k, nb, w != 0); });
+    }
+  }
+  // no buffers must be a no-op even for a positive length
+  {
+    ++gTests;
+    std::vector<float> out(MAXLEN + GUARD, sentinel<float>());
+    const float* in[NBUF];
+    for(int j=0; j<NBUF; ++j) in[j] = gNf[j].data();
+    for(int nb=-1; nb<=0; ++nb)
+    {
+      EVM::signedAbsMin(in, nb, MAXLEN, out.data());
+      EVM::signedAbsMax(in, nb, MAXLEN, out.data());
+    }
+    bool ok = true;
+    for(int k=0; k<MAXLEN+GUARD; ++k) if(!isSentinel(out[k])) ok = false;
+    if(!ok) ++gFailed;
+    printf("  %-34s %s  [nbufs 0 and -1 leave out untouched]\n",
+           "signedAbsMin/Max(0 buffers)", ok ? "PASS" : "FAIL");
+  }
+
+  //--- threshCmp / blend : choose in1 or in2 by comparing with a threshold --
+  printf("\nthreshCmp / blend\n");
+  check<float, float, float>("threshCmp(float,float)", TOL_CMP, N0, N1,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::threshCmp(a, b, n, gTh, o); },
+    [](int k){ return cdbl((gNf[0][k] >= gTh) ? gNf[0][k] : gNf[1][k]); });
+
+  check<float, float, float>("blend(float,float,float)", TOL_CMP, N0, N1,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::blend(a, b, gNf[2].data(), n, gTh, o); },
+    [](int k){ return cdbl((gNf[2][k] >= gTh) ? gNf[0][k] : gNf[1][k]); });
+
+  // the same again with in3 as the a buffer, so the in-place modes also put
+  // out on top of in3
+  check<float, float, float>("blend(float,float,float) a=in3", TOL_CMP, N2, N1,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::blend(gNf[0].data(), b, a, n, gTh, o); },
+    [](int k){ return cdbl((gNf[2][k] >= gTh) ? gNf[0][k] : gNf[1][k]); });
 
   //--- scale : out = in * scaleFactor ---------------------------------------
   printf("\nscale\n");
@@ -784,6 +1172,16 @@ int main(int argc, char** argv)
   check<float, float, float>("abs(float)", TOL_EXACT, Af, nullF,
     [](const float* a, const float*, int n, float* o) { EVM::abs(a, n, o); },
     [](int k){ return cdbl(std::fabs(static_cast<double>(gAf[k]))); });
+
+  check<complex<float>, float, float>("mag(complex)", TOL_EXACT, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, float* o)
+      { EVM::mag(a, n, o); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k]))); });
+
+  check<complex<float>, float, float>("magr(complex)", TOL_RCP, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, float* o)
+      { EVM::magr(a, n, o); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k]))); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");

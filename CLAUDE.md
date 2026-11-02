@@ -18,7 +18,7 @@ g++ -std=c++17 -march=native -O3 -I../include/ -o evm_unit_test evm_unit_test.cc
 ./evm_unit_test 12345      # reproduce a run with a specific seed
 ```
 
-Exit status is 0 only if every check passes. There is no per-test filter: the binary always runs the full suite (about 38 checks, a few seconds).
+Exit status is 0 only if every check passes. There is no per-test filter: the binary always runs the full suite (about 75 checks, a few seconds).
 
 The SIMD branches are independent implementations, so test each one by forcing dispatch down with macros:
 
@@ -38,19 +38,23 @@ default paths through use of DISABLE_<ISA>.
 
 **Runtime dispatch via function multiversioning.** Each public function is defined several times with the same signature, each with `__attribute__((__target__("avx512f")))`, `"avx"` (sometimes `"avx2"` / `"avx2,fma"`), and `"default"`. GCC/icpx pick the best variant at runtime from the CPU, regardless of `-march`. Every non-default variant is wrapped in `#if !defined(DISABLE_<ISA>)`. SSE variants exist only for `getOptLevelRaw()`. Adding a function means writing the AVX512, AVX, and default variants, each with its guard.
 
-**File layout.** The top half of the file has doc-commented declarations grouped by `//===// Section //===//` banners. The bottom half has matching `// <Section> Function Implementation //` banners with the definitions. Keep the two in sync. The file-header comment lists the operations and their accuracy and speed tradeoffs. Dot-product, power, magnitude, and specialized (tune, fs2Shift) are listed there but not implemented yet: their implementation sections are empty, and the Dot-Product declarations are in progress.
+A plain (non-multiversioned) wrapper that calls a multiversioned function, such as the by-value `dotp`/`dotpc` wrappers, `magSq(float)` and `abs`, must be defined after every target version of that function. Declare it in the top half, define it after the `default` version. Defined earlier, icpx refuses to compile the header, and g++ binds the call to the first clone (`.avx512f`), so there is no runtime dispatch.
+
+**File layout.** The top half of the file has doc-commented declarations grouped by `//===// Section //===//` banners. The bottom half has matching `// <Section> Function Implementation //` banners with the definitions. Keep the two in sync. The file-header comment lists the operations and their accuracy and speed tradeoffs. The specialized functions (tune, fs2Shift) are listed there but not implemented yet.
 
 **Tail handling is where bugs live.** Main loops process full registers. The final partial register uses masked loads and stores: `masks[rem]` with `_mm256_maskload_ps`/`maskstore` for AVX, and `mask16(rem)` with `maskz_loadu`/`mask_storeu` for AVX512. Complex data uses `masks[rem<<1]`. Every function must:
 - treat `len <= 0` as a no-op,
 - never write past `out[len-1]`,
 - work in place (`out` may alias an input).
 
-`evm_unit_test.cc` sweeps every remainder for 4/8/16-element registers, plus negative lengths, to catch these bugs. Register new functions there via `check<>()` with the right tolerance class: `TOL_EXACT` for true multiply/divide, `TOL_NR` for reciprocal plus one Newton-Raphson step, `TOL_RCP` for a bare reciprocal. The doubles baseline is computed with `std::complex<double>`.
+`evm_unit_test.cc` sweeps every remainder for 4/8/16-element registers, plus negative lengths, to catch these bugs. Register new functions there via `check<>()` with the right tolerance class: `TOL_EXACT` for true multiply/divide, `TOL_NR` for reciprocal plus one Newton-Raphson step, `TOL_RCP` for a bare reciprocal, `TOL_CMP` (exact) for comparison and selection. The doubles baseline is computed with `std::complex<double>`. The dot-products are reductions and go through `checkDot()` instead; they must set the result to 0 when `len <= 0`. Output buffers are pre-filled with a NaN sentinel that is matched by its bit pattern, so a NaN computed by a kernel counts as a wrong value or a stray write, not as an untouched element. The complex magnitudes run on `gZc`, which has a zero in every third element, because `x*rsqrt(x)` is `0*inf = NaN` at zero unless the kernel guards it. The comparison functions run on `gNf`, whose values are a multiple of 0.5 half of the time, so ties with the threshold and equal magnitudes of opposite sign are common. `minMax` with two output buffers goes through `checkPair()`, which also runs each output on top of either input, and the `minMax` reduction goes through `checkMinMax()`, which puts a single min or max at every position. Where a stray write could put back the sentinel unchanged (min/max of two sentinels, `zneg`/`zpos` in place), those tests fill the area past the end with values the kernel would change.
 
 **Deliberate choices that look like bugs:**
 - Division kernels divide the zero-filled unused lanes of the last register (0/0), which raises `FE_INVALID`/`FE_DIVBYZERO` on valid input. This is intentional for speed and results are unaffected. `setUnusedToOne()` exists for callers who need clean FP flags.
 - "True" complex division computes `1/divisor` and then multiplies. This is faster but less accurate (about 1.5 ulp) and range-restricted.
 - `_mm256_blendv_ps` is avoided because GCC 12 can expand it into a branch per element.
+- `min_ps`/`max_ps` return their second operand on a tie or NaN, so the min/max kernels pass `in2` first (and `zneg`/`zpos` pass 0 first) to match `std::min(in1, in2)` in the default versions. The `minMax` reduction passes the loaded value first so that a NaN element is skipped.
+- AVX/AVX2 `magr` computes `|in|` as `rcp(rsqrt(|in|^2))`, not `|in|^2*rsqrt(|in|^2)`. It costs the same, but it gives 0 at zero instead of `0*inf = NaN`. AVX512 uses a zero-masked `rsqrt14` instead, because `rcp14` is 3 uops on a zmm register.
 - getOptLevel SSE variants are intentional even though there are no
   SSE-optimized function
 
