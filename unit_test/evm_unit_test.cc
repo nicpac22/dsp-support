@@ -69,6 +69,7 @@
 #include <string>
 #include <cmath>
 #include <cstdio>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -94,6 +95,7 @@ static const double TOL_EXACT = 1.0e-6;   // true multiply/divide   (~1.7e-07)
 static const double TOL_NR    = 5.0e-6;   // reciprocal + 1x Newton (~2.5e-07)
 static const double TOL_RCP   = 2.0e-3;   // bare reciprocal        (~2.9e-04)
 static const double TOL_CMP   = 0.0;      // comparison/selection   (exact)
+static const double TOL_TRIG  = 2.0e-6;   // sin/cos/atan2          (~8.1e-07)
 
 // Number of input buffers for signedAbsMin/signedAbsMax.
 static const int NBUF = 5;
@@ -112,6 +114,11 @@ static float                        gSf;        // real scale factor
 static complex<float>               gSc;        // complex scale factor
 static std::vector<std::vector<float> > gNf;    // comparison inputs, see below
 static float                        gTh;        // comparison threshold
+static std::vector<float>           gCf;        // real third input (multSum)
+static std::vector<complex<float> > gCc;        // complex third input
+static std::vector<int8_t>          gI8;        // integer conversion inputs
+static std::vector<int16_t>         gI16;
+static std::vector<int32_t>         gI32;
 
 static float randReal()
 {
@@ -167,8 +174,10 @@ static void generateData(unsigned int seed)
     // input for the complex magnitudes with every third element zero (3 is
     // coprime to the register widths, so the zeros visit every lane): a
     // magnitude computed as x*rsqrt(x) gives 0*inf = NaN at zero unless the
-    // kernel guards against it
-    gZc[i] = (i%3 == 0) ? complex<float>(0.0f, 0.0f) : gAc[i];
+    // kernel guards against it.  The zeros cycle through the four sign
+    // combinations, since atan2(+-0, -0) is +-pi rather than +-0 (cartToPol)
+    gZc[i] = (i%3 == 0) ? complex<float>((i&2) ? -0.0f : 0.0f,
+                                         (i&4) ? -0.0f : 0.0f) : gAc[i];
   }
   gSf = randDivisorReal();
   gSc = randDivisorComplex();
@@ -178,6 +187,27 @@ static void generateData(unsigned int seed)
   for(int j=0; j<NBUF; ++j)
     for(int i=0; i<MAXLEN; ++i) gNf[j][i] = randTie();
   gTh = 0.5f*std::uniform_int_distribution<int>(-3, 3)(gRng);
+  // also drawn last, for the same reason
+  gCf.resize(MAXLEN);  gCc.resize(MAXLEN);
+  for(int i=0; i<MAXLEN; ++i)
+  {
+    gCf[i] = randReal();
+    gCc[i] = randComplex();
+  }
+  // also drawn last, for the same reason.  The integers cover each type's full
+  // range; half of the 32-bit ones are within +/-2^24, where the conversion
+  // is exact, and the rest are mostly larger, where it rounds
+  gI8.resize(MAXLEN);  gI16.resize(MAXLEN);  gI32.resize(MAXLEN);
+  for(int i=0; i<MAXLEN; ++i)
+  {
+    gI8[i]  = static_cast<int8_t>(std::uniform_int_distribution<int>(
+        INT8_MIN, INT8_MAX)(gRng));
+    gI16[i] = static_cast<int16_t>(std::uniform_int_distribution<int>(
+        INT16_MIN, INT16_MAX)(gRng));
+    gI32[i] = (i&1) ?
+        std::uniform_int_distribution<int32_t>(INT32_MIN, INT32_MAX)(gRng) :
+        std::uniform_int_distribution<int32_t>(-(1<<24), 1<<24)(gRng);
+  }
 }
 
 //==============================================================================
@@ -229,6 +259,15 @@ static cdbl signedAbsRef(const int k, const int nbufs, const bool wantMax)
   return cdbl(val);
 }
 
+// (magnitude, phase*scale) to cartesian, the baseline for polToCart and
+// polToCartRad (std::polar is undefined for a negative magnitude)
+static cdbl polarRef(const complex<float> v, const double scale)
+{
+  const double m  = v.real();
+  const double ph = scale*v.imag();
+  return cdbl(m*std::cos(ph), m*std::sin(ph));
+}
+
 // zneg and zpos work in place.  They are run on a copy of the input whose
 // elements past the end hold a value the function would change (-1 for zneg,
 // 1 for zpos), since a stray write over the sentinel would put back the same
@@ -245,6 +284,20 @@ static void runZeroInPlace(const bool neg, const float* const in, const int len,
   else    EVM::zpos(buf.data(), len);
   for(int k=0; k<valid; ++k) out[k] = buf[k];
   for(int k=valid; k<MAXLEN+GUARD; ++k) if(buf[k] != guard) out[k] = buf[k];
+}
+
+// The integer to float conversions work in place through their void*
+// wrappers, where the output is wider than the input.  The integers are copied
+// to the front of a buffer that is otherwise the sentinel, and the whole
+// buffer is passed on in out so that writes past the end show up.
+template<class T>
+static void runCnvrtInPlace(const T* const in, const int len, float* const out,
+                            void (*cnvrt)(void*, int))
+{
+  std::vector<float> buf(MAXLEN + GUARD, sentinel<float>());
+  if(len > 0) std::memcpy(buf.data(), in, len*sizeof(T));
+  cnvrt(buf.data(), len);
+  std::memcpy(out, buf.data(), buf.size()*sizeof(float));
 }
 
 static bool isSentinel(const float v)
@@ -296,11 +349,17 @@ static int gTests = 0, gFailed = 0;
 // Relative error is measured against max(|baseline|, FLT_MIN): float results
 // below FLT_MIN are subnormal and carry only absolute precision (pow8 of a
 // small input lands there).
+//
+// magnitude(k), if given, takes the place of |baseline|.  multSum passes
+// |in1*in2| + |in3|: its result can cancel to near zero, where the rounding
+// error of the product is large next to the result but not next to the terms
+// (the dot-products are measured the same way).
 //==============================================================================
-template<class TA, class TB, class TO, class FEVM, class FREF>
+template<class TA, class TB, class TO, class FEVM, class FREF,
+         class FMAG = std::nullptr_t>
 static void check(const char* name, const double tol,
                   const TA* const aBuf, const TB* const bBuf,
-                  FEVM runEvm, FREF baseline)
+                  FEVM runEvm, FREF baseline, FMAG magnitude = nullptr)
 {
   ++gTests;
   const bool cplx = IsComplex<TO>::value;
@@ -378,7 +437,10 @@ static void check(const char* name, const double tol,
         const cdbl   got   = toCdbl(res[k]);
         const cdbl   want  = baseline(k);
         const double adiff = std::abs(got - want);
-        const double mag   = std::max(std::abs(want),
+        double size = std::abs(want);
+        if constexpr (!std::is_same<FMAG, std::nullptr_t>::value)
+          size = magnitude(k);
+        const double mag   = std::max(size,
             static_cast<double>(std::numeric_limits<float>::min()));
         const double rdiff = adiff/mag;
         ++compared;
@@ -769,6 +831,165 @@ static void checkMinMax(const char* name, const float* const aBuf)
 }
 
 //==============================================================================
+// Integer to float conversion with min/max test driver
+//
+//   runEvm(in, len, out, minOut, maxOut, noInit)  calls the EVM function
+//
+// The converted values, minOut and maxOut must all equal the baseline exactly
+// (static_cast<float> of the input).  As in checkMinMax(), every length is run
+// with noInit false, and with noInit true from starting values inside, outside
+// and the wrong way round relative to the data range, on the data as given,
+// made all positive and made all negative, and then with a single minimum,
+// and then a single maximum, at every position (on the data halved, so that
+// the type's lowest and highest values are unique).  Past the end the input
+// alternates between the type's lowest and highest values, so a read past the
+// end that took part would change the result, and the output is checked for
+// writes past the end.  Each length is also run once in place, with the
+// integers at the front of the float output buffer.
+//==============================================================================
+template<class T, class FEVM>
+static void checkCnvrtMinMax(const char* name, const T* const aBuf,
+                             FEVM runEvm)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0, nstray = 0;
+  const T lo = std::numeric_limits<T>::lowest();
+  const T hi = std::numeric_limits<T>::max();
+  std::vector<T>     a(MAXLEN + GUARD);
+  std::vector<float> out(MAXLEN + GUARD);
+
+  // starting values when noInit is true, case 0 runs with noInit false
+  const float initMin[] = {0.0f, -0.5f, -3.0e9f,  3.0e9f};
+  const float initMax[] = {0.0f,  0.5f,  3.0e9f, -3.0e9f};
+  const char* const dataName[] = {"as given", "all positive", "all negative",
+                                  "single min/max"};
+
+  // runs the conversion of a with noInit from case init and checks the result
+  auto runCase = [&](const int len, const int init, const int data,
+                     const int at, const bool inPlace)
+  {
+    const int  valid  = (len > 0) ? len : 0;
+    const bool noInit = (init != 0);
+    // without noInit the outputs start as the sentinel, which a negative or
+    // zero length must leave in place
+    float mn = noInit ? initMin[init] : sentinel<float>();
+    float mx = noInit ? initMax[init] : sentinel<float>();
+    float wantMin = mn;
+    float wantMax = mx;
+    if(valid > 0)
+    {
+      if(!noInit)
+      {
+        wantMin = static_cast<float>(a[0]);
+        wantMax = static_cast<float>(a[0]);
+      }
+      for(int k=0; k<valid; ++k)
+      {
+        wantMin = std::min(wantMin, static_cast<float>(a[k]));
+        wantMax = std::max(wantMax, static_cast<float>(a[k]));
+      }
+    }
+    for(int k=0; k<MAXLEN+GUARD; ++k) out[k] = sentinel<float>();
+    if(inPlace)
+    {
+      if(valid > 0) std::memcpy(out.data(), a.data(), valid*sizeof(T));
+      runEvm(reinterpret_cast<const T*>(out.data()), len, out.data(), mn, mx,
+             noInit);
+    }
+    else
+    {
+      runEvm(a.data(), len, out.data(), mn, mx, noInit);
+    }
+    ++compared;
+
+    const char* where = inPlace ? ", in place" : "";
+    for(int k=0; k<MAXLEN+GUARD; ++k)
+    {
+      if((k < valid) ? (out[k] == static_cast<float>(a[k]))
+                     : isSentinel(out[k])) continue;
+      if(k < valid) ++nbad;
+      else          ++nstray;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        if(k < valid)
+          printf("      len=%-5d element %-5d evm=%.9g baseline=%.9g "
+                 "[%s, noInit=%d%s]\n", len, k, out[k],
+                 static_cast<float>(a[k]), dataName[data], noInit ? 1 : 0,
+                 where);
+        else
+          printf("      len=%-5d element %-5d WROTE PAST END evm=%.9g "
+                 "[%s, noInit=%d%s]\n", len, k, out[k], dataName[data],
+                 noInit ? 1 : 0, where);
+      }
+    }
+
+    const bool ok = (valid == 0 && !noInit) ?
+        (isSentinel(mn) && isSentinel(mx)) :
+        (mn == wantMin && mx == wantMax);
+    if(ok) return;
+    ++nbad;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d evm min,max=%.9g,%.9g baseline=%.9g,%.9g "
+             "[%s", len, mn, mx, wantMin, wantMax, dataName[data]);
+      if(at >= 0) printf(" at element %d", at);
+      printf(", noInit=%d%s]\n", noInit ? 1 : 0, where);
+    }
+  };
+
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len   = gLengths[li];
+    const int valid = (len > 0) ? len : 0;
+    for(int data=0; data<4; ++data)
+    {
+      for(int k=0; k<MAXLEN+GUARD; ++k)
+      {
+        // |x|/2 + 1 can't overflow, even for the lowest value
+        const T half = static_cast<T>(std::abs(static_cast<int64_t>(
+            aBuf[(k < valid) ? k : 0]))/2 + 1);
+        if(k >= valid)     a[k] = (k&1) ? hi : lo;
+        else if(data == 1) a[k] = half;
+        else if(data == 2) a[k] = static_cast<T>(-half);
+        else if(data == 3) a[k] = static_cast<T>(aBuf[k]/2);
+        else               a[k] = aBuf[k];
+      }
+      if(data < 3)
+      {
+        for(int init=0; init<4; ++init) runCase(len, init, data, -1, false);
+        if(data == 0) runCase(len, 0, data, -1, true);
+        continue;
+      }
+      // a minimum then a maximum outside the data range at each position
+      for(int at=0; at<valid; ++at)
+      {
+        for(int s=0; s<2; ++s)
+        {
+          a[at] = s ? hi : lo;
+          runCase(len, 0, data, at, false);
+        }
+        a[at] = static_cast<T>(aBuf[at]/2);
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, exact", name, pass ? "PASS" : "FAIL",
+         compared);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
   const unsigned int seed = (argc > 1)
@@ -973,6 +1194,57 @@ int main(int argc, char** argv)
     [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
       { EVM::multcs(a, b, n, gSf, o); },
     [](int k){ return toCdbl(gAc[k]) * std::conj(toCdbl(gBc[k])) * cdbl(gSf); });
+
+  //--- multSum : out = in1 * in2 + in3 --------------------------------------
+  // error measured against |in1*in2| + |in3|, see the test driver; the a=in3
+  // runs pass in3 as the a buffer so the in-place modes also put out on in3
+  printf("\nmultSum\n");
+  check<float, float, float>("multSum(float,float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::multSum(a, b, gCf.data(), n, o); },
+    [](int k){ return toCdbl(gAf[k]) * toCdbl(gBf[k]) + toCdbl(gCf[k]); },
+    [](int k){ return std::abs(toCdbl(gAf[k]) * toCdbl(gBf[k])) +
+                      std::abs(toCdbl(gCf[k])); });
+
+  check<float, float, float>("multSum(float,float,float) a=in3", TOL_EXACT,
+    gCf.data(), Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::multSum(gAf.data(), b, a, n, o); },
+    [](int k){ return toCdbl(gAf[k]) * toCdbl(gBf[k]) + toCdbl(gCf[k]); },
+    [](int k){ return std::abs(toCdbl(gAf[k]) * toCdbl(gBf[k])) +
+                      std::abs(toCdbl(gCf[k])); });
+
+  check<complex<float>, float, complex<float> >(
+    "multSum(complex,float,complex)", TOL_EXACT, Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::multSum(a, b, gCc.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gBf[k]) + toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBf[k])) +
+                      std::abs(toCdbl(gCc[k])); });
+
+  check<complex<float>, float, complex<float> >(
+    "multSum(complex,float,complex) a=in3", TOL_EXACT, gCc.data(), Bf,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::multSum(gAc.data(), b, a, n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gBf[k]) + toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBf[k])) +
+                      std::abs(toCdbl(gCc[k])); });
+
+  check<complex<float>, complex<float>, complex<float> >(
+    "multSum(complex,complex,complex)", TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::multSum(a, b, gCc.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gBc[k]) + toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBc[k])) +
+                      std::abs(toCdbl(gCc[k])); });
+
+  check<complex<float>, complex<float>, complex<float> >(
+    "multSum(complex,complex,complex) a=in3", TOL_EXACT, gCc.data(), Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::multSum(gAc.data(), b, a, n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gBc[k]) + toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBc[k])) +
+                      std::abs(toCdbl(gCc[k])); });
 
   //--- div / divnr / divr : out = in1 / in2 ---------------------------------
   // Same maths three ways: true divide, reciprocal + one Newton-Raphson
@@ -1182,6 +1454,100 @@ int main(int argc, char** argv)
     [](const complex<float>* a, const float*, int n, float* o)
       { EVM::magr(a, n, o); },
     [](int k){ return cdbl(std::abs(toCdbl(gZc[k]))); });
+
+  //--- cnvrtInt*ToFloat : out = static_cast<float>(in) ----------------------
+  // the conversions must give exactly the float the cast gives (int8/int16
+  // are exact, int32 rounds to nearest); "in place" goes through the void*
+  // wrapper, whose output is wider than its input
+  printf("\ninteger to float conversion\n");
+  check<int8_t, float, float>("cnvrtInt8ToFloat", TOL_CMP, gI8.data(), nullF,
+    [](const int8_t* a, const float*, int n, float* o)
+      { EVM::cnvrtInt8ToFloat(a, n, o); },
+    [](int k){ return cdbl(static_cast<float>(gI8[k])); });
+
+  check<int8_t, float, float>("cnvrtInt8ToFloat in place", TOL_CMP,
+    gI8.data(), nullF,
+    [](const int8_t* a, const float*, int n, float* o)
+      { runCnvrtInPlace(a, n, o, [](void* p, int m)
+          { EVM::cnvrtInt8ToFloat(p, m); }); },
+    [](int k){ return cdbl(static_cast<float>(gI8[k])); });
+
+  checkCnvrtMinMax("cnvrtInt8ToFloat with min/max", gI8.data(),
+    [](const int8_t* a, int n, float* o, float& mn, float& mx, bool ni)
+      { EVM::cnvrtInt8ToFloat(a, n, o, mn, mx, ni); });
+
+  check<int16_t, float, float>("cnvrtInt16ToFloat", TOL_CMP, gI16.data(),
+    nullF,
+    [](const int16_t* a, const float*, int n, float* o)
+      { EVM::cnvrtInt16ToFloat(a, n, o); },
+    [](int k){ return cdbl(static_cast<float>(gI16[k])); });
+
+  check<int16_t, float, float>("cnvrtInt16ToFloat in place", TOL_CMP,
+    gI16.data(), nullF,
+    [](const int16_t* a, const float*, int n, float* o)
+      { runCnvrtInPlace(a, n, o, [](void* p, int m)
+          { EVM::cnvrtInt16ToFloat(p, m); }); },
+    [](int k){ return cdbl(static_cast<float>(gI16[k])); });
+
+  checkCnvrtMinMax("cnvrtInt16ToFloat with min/max", gI16.data(),
+    [](const int16_t* a, int n, float* o, float& mn, float& mx, bool ni)
+      { EVM::cnvrtInt16ToFloat(a, n, o, mn, mx, ni); });
+
+  check<int32_t, float, float>("cnvrtInt32ToFloat", TOL_CMP, gI32.data(),
+    nullF,
+    [](const int32_t* a, const float*, int n, float* o)
+      { EVM::cnvrtInt32ToFloat(a, n, o); },
+    [](int k){ return cdbl(static_cast<float>(gI32[k])); });
+
+  check<int32_t, float, float>("cnvrtInt32ToFloat in place", TOL_CMP,
+    gI32.data(), nullF,
+    [](const int32_t* a, const float*, int n, float* o)
+      { runCnvrtInPlace(a, n, o, [](void* p, int m)
+          { EVM::cnvrtInt32ToFloat(p, m); }); },
+    [](int k){ return cdbl(static_cast<float>(gI32[k])); });
+
+  checkCnvrtMinMax("cnvrtInt32ToFloat with min/max", gI32.data(),
+    [](const int32_t* a, int n, float* o, float& mn, float& mx, bool ni)
+      { EVM::cnvrtInt32ToFloat(a, n, o, mn, mx, ni); });
+
+  //--- polToCart / cartToPol : polar (mag, phase) <-> cartesian -------------
+  // the polar inputs are gAc as (magnitude, phase), the cartesian inputs are
+  // gZc so that atan2(0, 0) is covered.  The cartesian error is measured
+  // against the magnitude, since one part can be near zero.  The SIMD
+  // versions need SVML, so they are only tested with the Intel compiler
+  printf("\npolar / cartesian conversion  (SIMD versions need SVML: %s)\n",
+#if defined(EVM_SVML)
+         "yes");
+#else
+         "no, default version only");
+#endif
+  check<complex<float>, float, complex<float> >("polToCart(complex)",
+    TOL_TRIG, Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCart(a, n, o); },
+    [](int k){ return polarRef(gAc[k], 2.0*M_PI); },
+    [](int k){ return std::fabs(static_cast<double>(gAc[k].real())); });
+
+  check<complex<float>, float, complex<float> >("polToCartRad(complex)",
+    TOL_TRIG, Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCartRad(a, n, o); },
+    [](int k){ return polarRef(gAc[k], 1.0); },
+    [](int k){ return std::fabs(static_cast<double>(gAc[k].real())); });
+
+  check<complex<float>, float, complex<float> >("cartToPol(complex)",
+    TOL_TRIG, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::cartToPol(a, n, o); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k])),
+                           std::arg(toCdbl(gZc[k]))/(2.0*M_PI)); });
+
+  check<complex<float>, float, complex<float> >("cartToPolRad(complex)",
+    TOL_TRIG, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::cartToPolRad(a, n, o); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k])),
+                           std::arg(toCdbl(gZc[k]))); });
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");
