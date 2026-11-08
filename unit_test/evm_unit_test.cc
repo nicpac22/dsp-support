@@ -119,6 +119,8 @@ static std::vector<complex<float> > gCc;        // complex third input
 static std::vector<int8_t>          gI8;        // integer conversion inputs
 static std::vector<int16_t>         gI16;
 static std::vector<int32_t>         gI32;
+static std::vector<complex<float> > gLc;        // gAc with large phases
+static std::vector<complex<float> > gLr;
 
 static float randReal()
 {
@@ -208,6 +210,16 @@ static void generateData(unsigned int seed)
         std::uniform_int_distribution<int32_t>(INT32_MIN, INT32_MAX)(gRng) :
         std::uniform_int_distribution<int32_t>(-(1<<24), 1<<24)(gRng);
   }
+  // polar inputs with large phases, derived from gAc (no draws): up to 1e4
+  // cycles for polToCart, and up to 1e7 radians for polToCartRad, well past
+  // the 65536 where evm_trig.h's reduction hands lanes over to scalar sincosf
+  // (and far enough that the lanes would be wrong without it)
+  gLc.resize(MAXLEN);  gLr.resize(MAXLEN);
+  for(int i=0; i<MAXLEN; ++i)
+  {
+    gLc[i] = complex<float>(gAc[i].real(), 5000.0f*gAc[i].imag());
+    gLr[i] = complex<float>(gAc[i].real(), 5.0e6f*gAc[i].imag());
+  }
 }
 
 //==============================================================================
@@ -266,6 +278,15 @@ static cdbl polarRef(const complex<float> v, const double scale)
   const double m  = v.real();
   const double ph = scale*v.imag();
   return cdbl(m*std::cos(ph), m*std::sin(ph));
+}
+
+// (magnitude, phase in cycles) to cartesian with whole cycles removed exactly
+// first, the baseline for polToCart at large phases
+static cdbl polarRefCyc(const complex<float> v)
+{
+  const double m  = v.real();
+  const double r  = v.imag() - std::nearbyint(static_cast<double>(v.imag()));
+  return cdbl(m*std::cos(2.0*M_PI*r), m*std::sin(2.0*M_PI*r));
 }
 
 // zneg and zpos work in place.  They are run on a copy of the input whose
@@ -348,7 +369,8 @@ static int gTests = 0, gFailed = 0;
 //
 // Relative error is measured against max(|baseline|, FLT_MIN): float results
 // below FLT_MIN are subnormal and carry only absolute precision (pow8 of a
-// small input lands there).
+// small input lands there).  With flush to zero on (icpx turns it on by
+// default) such a result comes out as 0, which is accepted as well.
 //
 // magnitude(k), if given, takes the place of |baseline|.  multSum passes
 // |in1*in2| + |in3|: its result can cancel to near zero, where the rounding
@@ -369,6 +391,8 @@ static void check(const char* name, const double tol,
   double worstRel = 0.0;
 
   std::vector<TO> out(MAXLEN + GUARD);
+  // flush to zero, under which a result below FLT_MIN may come out as 0
+  const bool ftz = (_mm_getcsr() & _MM_FLUSH_ZERO_MASK) == _MM_FLUSH_ZERO_ON;
   // complex input buffer whose front receives the real results in mode 3
   const bool cplxToReal = IsComplex<TA>::value && !cplx;
   std::vector<TA> io(MAXLEN + GUARD);
@@ -450,6 +474,8 @@ static void check(const char* name, const double tol,
           if(rdiff > worstRel) worstRel = rdiff;
           continue;
         }
+        if(ftz && got == cdbl(0.0, 0.0) &&
+           std::abs(want) < std::numeric_limits<float>::min()) continue;
         ++nbad;
         if(nshown < MAX_REPORT)
         {
@@ -609,6 +635,115 @@ static void checkDot(const char* name, const TA* const aBuf,
   printf("  %-34s %s  [%ld values, tol (%slen+1)*2^-24, worst rel %.3e",
          name, pass ? "PASS" : "FAIL", compared, (terms == 2) ? "2*" : "",
          worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
+}
+
+//==============================================================================
+// Multiply-expand test driver (multe)
+//
+// multe puts in1*in2 in the real part of each complex output element and
+// leaves the imaginary part as it was.  The output buffer starts as the
+// sentinel, so every imaginary part must still be the sentinel afterwards, as
+// must every float past the end.  In place, the complex output is laid over
+// in1 or in2, which it is twice as wide as (the kernels run from the end to the
+// start for this), and each imaginary part must still hold the input float
+// that was there.  The real parts must be within tol of the double baseline.
+//==============================================================================
+static void checkMulte(const char* name, const double tol,
+                       const float* const aBuf, const float* const bBuf)
+{
+  ++gTests;
+  long   compared = 0;
+  int    nbad = 0, nshown = 0, nstray = 0;
+  double worstRel = 0.0;
+
+  const int nfl = 2*(MAXLEN + GUARD);
+  std::vector<float> buf(nfl), before(nfl);
+
+  // mode 0: separate buffers.  mode 1: out over in1.  mode 2: out over in2.
+  for(int mode=0; mode<3; ++mode)
+  {
+    const char* modeName = (mode==0) ? "" :
+                           (mode==1) ? " [in-place on in1]" :
+                                       " [in-place on in2]";
+    for(size_t li=0; li<gLengths.size(); ++li)
+    {
+      const int len   = gLengths[li];
+      const int valid = (len > 0) ? len : 0;
+
+      for(int k=0; k<nfl; ++k) buf[k] = sentinel<float>();
+      const float* a = aBuf;
+      const float* b = bBuf;
+      if(mode == 1)
+      {
+        for(int k=0; k<valid; ++k) buf[k] = aBuf[k];
+        a = buf.data();
+      }
+      if(mode == 2)
+      {
+        for(int k=0; k<valid; ++k) buf[k] = bBuf[k];
+        b = buf.data();
+      }
+      before = buf;
+      EVM::multe(a, b, len, reinterpret_cast<complex<float>*>(buf.data()));
+
+      for(int k=0; k<nfl; ++k)
+      {
+        const int e = k>>1; // complex element
+        if(e < valid && !(k&1)) // real part, must hold the product
+        {
+          const double want  = static_cast<double>(aBuf[e])*bBuf[e];
+          const double adiff = std::abs(static_cast<double>(buf[k]) - want);
+          const double mag   = std::max(std::abs(want),
+              static_cast<double>(std::numeric_limits<float>::min()));
+          const double rdiff = adiff/mag;
+          ++compared;
+          if(rdiff <= tol)
+          {
+            if(rdiff > worstRel) worstRel = rdiff;
+            continue;
+          }
+          ++nbad;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            if(std::memcmp(&buf[k], &before[k], sizeof(float)) == 0)
+              printf("      len=%-5d element %-5d NOT WRITTEN   "
+                     "baseline=%.9g%s\n", len, e, want, modeName);
+            else
+              printf("      len=%-5d element %-5d evm=%.9g baseline=%.9g "
+                     "absdiff=%.6g reldiff=%.6g%s\n",
+                     len, e, buf[k], want, adiff, rdiff, modeName);
+          }
+        }
+        // imaginary part or past the end, must be left as it was
+        else if(std::memcmp(&buf[k], &before[k], sizeof(float)) != 0)
+        {
+          const bool imag = (e < valid);
+          if(imag) ++nbad;
+          else     ++nstray;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            printf("      len=%-5d element %-5d %s evm=%.9g was=%.9g%s\n",
+                   len, e, imag ? "IMAG CHANGED" : "WROTE PAST END",
+                   buf[k], before[k], modeName);
+          }
+        }
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, tol %.0e, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, tol, worstRel);
   if(nbad)   printf(", %d wrong", nbad);
   if(nstray) printf(", %d past end", nstray);
   printf("]\n");
@@ -990,6 +1125,90 @@ static void checkCnvrtMinMax(const char* name, const T* const aBuf,
 }
 
 //==============================================================================
+// Special values test driver (polar/cartesian conversions)
+//
+//   runEvm(in, len, out)  calls the EVM function under test
+//   want(v, part)         the expected value of part 0 (real) or 1 (imag) of
+//                         the output for the input v, in double
+//   size(v, part)         what the error of that part is measured against
+//
+// Every combination of a real part from re[] and an imaginary part from im[]
+// (zeros of both signs, +-1, infinities, NaN, denormals, large values) goes
+// through the function, out of place and then in place; the inputs fill
+// several registers and a partial one.  A NaN must give NaN and an infinity must match exactly.  If zeroSign
+// is set, a zero angle (part 1) must also keep its sign, since atan2(-0, 1)
+// is -0.  Otherwise the error must be within TOL_TRIG of size, plus FLT_MIN
+// since a denormal result may be flushed to zero (icpx turns on FTZ/DAZ by
+// default; under DAZ the double references see denormal inputs as zero too,
+// as the kernels do).  The output buffer is also checked for writes past the end.
+//==============================================================================
+template<class FEVM, class FWANT, class FSIZE>
+static void checkPolarSpecial(const char* name, const float* const re,
+                              const int nre, const float* const im,
+                              const int nim, FEVM runEvm, FWANT want,
+                              FSIZE size, const bool zeroSign)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  const int n = nre*nim;
+  std::vector<complex<float> > in(n), out(n + GUARD);
+  for(int a=0; a<nre; ++a)
+    for(int b=0; b<nim; ++b) in[a*nim + b] = complex<float>(re[a], im[b]);
+
+  for(int mode=0; mode<2; ++mode)
+  {
+    for(int k=0; k<n+GUARD; ++k)
+      out[k] = (mode == 1 && k < n) ? in[k] : sentinel<complex<float> >();
+    if(mode == 0) runEvm(in.data(), n, out.data());
+    else          runEvm(out.data(), n, out.data());
+    for(int k=0; k<n+GUARD; ++k)
+    {
+      bool ok[2] = {true, true};
+      if(k >= n) ok[0] = isSentinel(out[k]);
+      else
+      {
+        const double got[2] = {out[k].real(), out[k].imag()};
+        for(int part=0; part<2; ++part)
+        {
+          const double w = want(in[k], part);
+          const double g = got[part];
+          ++compared;
+          if(std::isnan(w))      ok[part] = std::isnan(g);
+          else if(std::isinf(w)) ok[part] = (g == w);
+          else if(zeroSign && part == 1 && w == 0)
+            ok[part] = (g == 0 && std::signbit(g) == std::signbit(w));
+          else ok[part] = (std::fabs(g - w) <= TOL_TRIG*size(in[k], part) +
+                                       std::numeric_limits<float>::min());
+        }
+      }
+      if(ok[0] && ok[1]) continue;
+      ++nbad;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        if(k >= n)
+          printf("      element %-5d WROTE PAST END%s\n", k,
+                 mode ? " [in place]" : "");
+        else
+          printf("      in=(%g,%g) evm=(%.9g,%.9g) want=(%.9g,%.9g)%s\n",
+                 in[k].real(), in[k].imag(), out[k].real(), out[k].imag(),
+                 want(in[k], 0), want(in[k], 1), mode ? " [in place]" : "");
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, NaN/inf exact", name, pass ? "PASS" : "FAIL",
+         compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
 int main(int argc, char** argv)
 {
   const unsigned int seed = (argc > 1)
@@ -1195,6 +1414,24 @@ int main(int argc, char** argv)
       { EVM::multcs(a, b, n, gSf, o); },
     [](int k){ return toCdbl(gAc[k]) * std::conj(toCdbl(gBc[k])) * cdbl(gSf); });
 
+  //--- multe : out.real = in1 * in2, out.imag left as it was ---------------
+  printf("\nmulte\n");
+  checkMulte("multe(float,float)", TOL_EXACT, Af, Bf);
+
+  //--- remult / immult : out = in1 * real(in2) or in1 * imag(in2) -----------
+  printf("\nremult / immult\n");
+  check<complex<float>, complex<float>, complex<float> >("remult(complex,complex)",
+    TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::remult(a, b, n, o); },
+    [](int k){ return toCdbl(gAc[k]) * static_cast<double>(gBc[k].real()); });
+
+  check<complex<float>, complex<float>, complex<float> >("immult(complex,complex)",
+    TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::immult(a, b, n, o); },
+    [](int k){ return toCdbl(gAc[k]) * static_cast<double>(gBc[k].imag()); });
+
   //--- multSum : out = in1 * in2 + in3 --------------------------------------
   // error measured against |in1*in2| + |in3|, see the test driver; the a=in3
   // runs pass in3 as the a buffer so the in-place modes also put out on in3
@@ -1245,6 +1482,56 @@ int main(int argc, char** argv)
     [](int k){ return toCdbl(gAc[k]) * toCdbl(gBc[k]) + toCdbl(gCc[k]); },
     [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBc[k])) +
                       std::abs(toCdbl(gCc[k])); });
+
+  //--- multcSum : out = in1 * conj(in2) + in3 -------------------------------
+  // error measured against |in1*in2| + |in3| and a=in3 runs as for multSum
+  printf("\nmultcSum\n");
+  check<complex<float>, complex<float>, complex<float> >(
+    "multcSum(complex,complex,complex)", TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::multcSum(a, b, gCc.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * std::conj(toCdbl(gBc[k])) +
+                      toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBc[k])) +
+                      std::abs(toCdbl(gCc[k])); });
+
+  check<complex<float>, complex<float>, complex<float> >(
+    "multcSum(complex,complex,complex) a=in3", TOL_EXACT, gCc.data(), Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::multcSum(gAc.data(), b, a, n, o); },
+    [](int k){ return toCdbl(gAc[k]) * std::conj(toCdbl(gBc[k])) +
+                      toCdbl(gCc[k]); },
+    [](int k){ return std::abs(toCdbl(gAc[k]) * toCdbl(gBc[k])) +
+                      std::abs(toCdbl(gCc[k])); });
+
+  //--- multMult : out = in1 * in2 * in3 -------------------------------------
+  printf("\nmultMult\n");
+  check<complex<float>, complex<float>, complex<float> >(
+    "multMult(complex,complex,float)", TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, complex<float>* o)
+      { EVM::multMult(a, b, gCf.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gBc[k]) * toCdbl(gCf[k]); });
+
+  //--- multDiv / multDivr / multDivnr : out = in1 * in2 / in3 ---------------
+  // the divisor in3 is gBf, which is kept away from zero
+  printf("\nmultDiv / multDivr / multDivnr\n");
+  check<complex<float>, float, complex<float> >(
+    "multDiv(complex,float,float)", TOL_EXACT, Ac, Af,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::multDiv(a, b, gBf.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gAf[k]) / toCdbl(gBf[k]); });
+
+  check<complex<float>, float, complex<float> >(
+    "multDivr(complex,float,float)", TOL_RCP, Ac, Af,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::multDivr(a, b, gBf.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gAf[k]) / toCdbl(gBf[k]); });
+
+  check<complex<float>, float, complex<float> >(
+    "multDivnr(complex,float,float)", TOL_NR, Ac, Af,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::multDivnr(a, b, gBf.data(), n, o); },
+    [](int k){ return toCdbl(gAc[k]) * toCdbl(gAf[k]) / toCdbl(gBf[k]); });
 
   //--- div / divnr / divr : out = in1 / in2 ---------------------------------
   // Same maths three ways: true divide, reciprocal + one Newton-Raphson
@@ -1513,13 +1800,14 @@ int main(int argc, char** argv)
   //--- polToCart / cartToPol : polar (mag, phase) <-> cartesian -------------
   // the polar inputs are gAc as (magnitude, phase), the cartesian inputs are
   // gZc so that atan2(0, 0) is covered.  The cartesian error is measured
-  // against the magnitude, since one part can be near zero.  The SIMD
-  // versions need SVML, so they are only tested with the Intel compiler
-  printf("\npolar / cartesian conversion  (SIMD versions need SVML: %s)\n",
+  // against the magnitude, since one part can be near zero.  polToCart always
+  // uses evm_trig.h, the others use SVML when EVM_SVML is defined (icpx
+  // without -DDISABLE_SVML) and evm_trig.h otherwise
+  printf("\npolar / cartesian conversion  (sin/cos of radians and atan2: %s)\n",
 #if defined(EVM_SVML)
-         "yes");
+         "SVML");
 #else
-         "no, default version only");
+         "evm_trig.h");
 #endif
   check<complex<float>, float, complex<float> >("polToCart(complex)",
     TOL_TRIG, Ac, nullF,
@@ -1535,6 +1823,20 @@ int main(int argc, char** argv)
     [](int k){ return polarRef(gAc[k], 1.0); },
     [](int k){ return std::fabs(static_cast<double>(gAc[k].real())); });
 
+  check<complex<float>, float, complex<float> >("polToCart(complex) large phase",
+    TOL_TRIG, gLc.data(), nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCart(a, n, o); },
+    [](int k){ return polarRefCyc(gLc[k]); },
+    [](int k){ return std::fabs(static_cast<double>(gLc[k].real())); });
+
+  check<complex<float>, float, complex<float> >("polToCartRad(complex) large x",
+    TOL_TRIG, gLr.data(), nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCartRad(a, n, o); },
+    [](int k){ return polarRef(gLr[k], 1.0); },
+    [](int k){ return std::fabs(static_cast<double>(gLr[k].real())); });
+
   check<complex<float>, float, complex<float> >("cartToPol(complex)",
     TOL_TRIG, Zc, nullF,
     [](const complex<float>* a, const float*, int n, complex<float>* o)
@@ -1548,6 +1850,77 @@ int main(int argc, char** argv)
       { EVM::cartToPolRad(a, n, o); },
     [](int k){ return cdbl(std::abs(toCdbl(gZc[k])),
                            std::arg(toCdbl(gZc[k]))); });
+
+  // special values: polar inputs (magnitude, phase) and cartesian (re, im).
+  // The magnitudes leave out infinities: an infinite magnitude at a quarter
+  // cycle is inf*0 = NaN where the sine or cosine is exactly 0 (evm_trig.h)
+  // but +-inf where it is only near 0 (sincosf), and neither is meaningful.
+  // Phases stay below 8.5e37 cycles, where the AVX2/AVX polToCart overflow
+  // to NaN
+  {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float mag[] = {0.0f, -0.0f, 1.0f, -1.0f, 0.5f, nan, 1.0e-40f,
+                         3.4e38f, -3.4e38f};
+    const float ph[] = {0.0f, -0.0f, 0.25f, -0.5f, 1.0f, -1.0f, 0.125f, inf,
+                        -inf, nan, 1.0e-40f, 1.0e37f, -1.0e30f};
+    const float cart[] = {0.0f, -0.0f, 1.0f, -1.0f, inf, -inf, nan, 1.0e-40f,
+                          -1.0e-40f, 3.4e38f, -3.4e38f, 0.5f};
+    const int nm = sizeof(mag)/sizeof(mag[0]);
+    const int np = sizeof(ph)/sizeof(ph[0]);
+    const int nc = sizeof(cart)/sizeof(cart[0]);
+    // magnitude times the sine or cosine; an infinite or NaN phase gives NaN.
+    // Phases in cycles are reduced exactly to the nearest quarter cycle first,
+    // so quarter cycles give exact zeros
+    auto polWant = [](const complex<float> v, const int part, const bool cyc)
+    {
+      const double m = v.real(), p = v.imag();
+      if(!std::isfinite(p)) return std::nan("");
+      if(!cyc) return m*(part ? std::sin(p) : std::cos(p));
+      const double r = p - std::nearbyint(p);
+      const double q = std::nearbyint(4.0*r), t = r - q/4.0;
+      const double s0 = std::sin(2.0*M_PI*t), c0 = std::cos(2.0*M_PI*t);
+      const int quad = (static_cast<int>(q)%4 + 4)%4;
+      const double sv[4] = {s0, c0, -s0, -c0}, cv[4] = {c0, -s0, -c0, s0};
+      return m*(part ? sv[quad] : cv[quad]);
+    };
+    auto polSize = [](const complex<float> v, const int)
+      { return std::fabs(static_cast<double>(v.real())); };
+    // |z| as the kernels compute it (|z|^2 overflows to inf past 1.8e19)
+    auto cartWant = [](const complex<float> v, const int part, const bool cyc)
+    {
+      const double x = v.real(), y = v.imag();
+      if(part == 0)
+        return std::sqrt(static_cast<double>(static_cast<float>(x*x + y*y)));
+      return std::atan2(y, x)/(cyc ? 2.0*M_PI : 1.0);
+    };
+    auto cartSize = [](const complex<float> v, const int part)
+    {
+      const double x = v.real(), y = v.imag();
+      return part ? std::fabs(std::atan2(y, x))
+                  : std::sqrt(static_cast<double>(static_cast<float>(x*x + y*y)));
+    };
+    checkPolarSpecial("polToCart special values", mag, nm, ph, np,
+      [](const complex<float>* a, int n, complex<float>* o)
+        { EVM::polToCart(a, n, o); },
+      [&](const complex<float> v, int part){ return polWant(v, part, true); },
+      polSize, false);
+    checkPolarSpecial("polToCartRad special values", mag, nm, ph, np,
+      [](const complex<float>* a, int n, complex<float>* o)
+        { EVM::polToCartRad(a, n, o); },
+      [&](const complex<float> v, int part){ return polWant(v, part, false); },
+      polSize, false);
+    checkPolarSpecial("cartToPol special values", cart, nc, cart, nc,
+      [](const complex<float>* a, int n, complex<float>* o)
+        { EVM::cartToPol(a, n, o); },
+      [&](const complex<float> v, int part){ return cartWant(v, part, true); },
+      cartSize, true);
+    checkPolarSpecial("cartToPolRad special values", cart, nc, cart, nc,
+      [](const complex<float>* a, int n, complex<float>* o)
+        { EVM::cartToPolRad(a, n, o); },
+      [&](const complex<float> v, int part){ return cartWant(v, part, false); },
+      cartSize, true);
+  }
 
   //--- getSize sanity -------------------------------------------------------
   printf("\nhelpers\n");
