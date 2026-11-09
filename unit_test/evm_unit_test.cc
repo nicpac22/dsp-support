@@ -75,6 +75,12 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#if defined(__unix__)
+#include <csetjmp>
+#include <csignal>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "evm.h"
 
@@ -88,6 +94,13 @@ typedef complex<double> cdbl;
 // an extra guard region so that writes past the end can be detected.
 static const int MAXLEN = 1024;
 static const int GUARD  = 32;
+// Input length for the divide-gather functions, which read every stride-th
+// element: enough for MAXLEN outputs at strides up to 16.
+static const int GLEN   = 16*MAXLEN;
+// Divisor floor passed to the eps overloads.  The divisors are in [-2,-0.25]
+// and [0.25,2] (some exactly -0.5 or 0.5), so it raises every negative one and
+// some of the positive ones, and ties with some.
+static const float GEPS = 0.5f;
 
 // Relative error tolerances by algorithm class.  The measured worst case for
 // each class on AVX2/AVX/scalar is given for reference.
@@ -121,6 +134,8 @@ static std::vector<int16_t>         gI16;
 static std::vector<int32_t>         gI32;
 static std::vector<complex<float> > gLc;        // gAc with large phases
 static std::vector<complex<float> > gLr;
+static std::vector<float>           gPf;        // |gBf|, positive divisors
+static std::vector<float>           gGa, gGb;   // divide-gather inputs
 
 static float randReal()
 {
@@ -219,6 +234,17 @@ static void generateData(unsigned int seed)
   {
     gLc[i] = complex<float>(gAc[i].real(), 5000.0f*gAc[i].imag());
     gLr[i] = complex<float>(gAc[i].real(), 5.0e6f*gAc[i].imag());
+  }
+  // positive divisors for the square roots of divSqrt with eps = 0, derived
+  // from gBf (no draws)
+  gPf.resize(MAXLEN);
+  for(int i=0; i<MAXLEN; ++i) gPf[i] = std::fabs(gBf[i]);
+  // also drawn last, for the same reason as above
+  gGa.resize(GLEN);  gGb.resize(GLEN);
+  for(int i=0; i<GLEN; ++i)
+  {
+    gGa[i] = randReal();
+    gGb[i] = randDivisorReal();
   }
 }
 
@@ -644,18 +670,23 @@ static void checkDot(const char* name, const TA* const aBuf,
 }
 
 //==============================================================================
-// Multiply-expand test driver (multe)
+// Expand test driver (multe, dive, divre, divnre)
 //
-// multe puts in1*in2 in the real part of each complex output element and
-// leaves the imaginary part as it was.  The output buffer starts as the
-// sentinel, so every imaginary part must still be the sentinel afterwards, as
-// must every float past the end.  In place, the complex output is laid over
+//   runEvm(a, b, len, out)  calls the EVM function under test
+//   baseline(k)             returns the expected real part of element k
+//
+// These put in1*in2 (or in1/in2) in the real part of each complex output
+// element and leave the imaginary part as it was.  The output buffer starts as
+// the sentinel, so every imaginary part must still be the sentinel afterwards,
+// as must every float past the end.  In place, the complex output is laid over
 // in1 or in2, which it is twice as wide as (the kernels run from the end to the
 // start for this), and each imaginary part must still hold the input float
 // that was there.  The real parts must be within tol of the double baseline.
 //==============================================================================
-static void checkMulte(const char* name, const double tol,
-                       const float* const aBuf, const float* const bBuf)
+template<class FEVM, class FREF>
+static void checkExpand(const char* name, const double tol,
+                        const float* const aBuf, const float* const bBuf,
+                        FEVM runEvm, FREF baseline)
 {
   ++gTests;
   long   compared = 0;
@@ -690,14 +721,14 @@ static void checkMulte(const char* name, const double tol,
         b = buf.data();
       }
       before = buf;
-      EVM::multe(a, b, len, reinterpret_cast<complex<float>*>(buf.data()));
+      runEvm(a, b, len, reinterpret_cast<complex<float>*>(buf.data()));
 
       for(int k=0; k<nfl; ++k)
       {
         const int e = k>>1; // complex element
-        if(e < valid && !(k&1)) // real part, must hold the product
+        if(e < valid && !(k&1)) // real part, must hold the result
         {
-          const double want  = static_cast<double>(aBuf[e])*bBuf[e];
+          const double want  = baseline(e);
           const double adiff = std::abs(static_cast<double>(buf[k]) - want);
           const double mag   = std::max(std::abs(want),
               static_cast<double>(std::numeric_limits<float>::min()));
@@ -750,6 +781,211 @@ static void checkMulte(const char* name, const double tol,
   if(nbad + nstray > nshown)
     printf("      ... %d further problems not shown\n",
            nbad + nstray - nshown);
+}
+
+//==============================================================================
+// Divide-gather test driver (divg, divrg, divnrg)
+//
+//   runEvm(a, b, len, stride, out)  calls the EVM function under test
+//   ref(a, b)                       returns the expected quotient of the input
+//                                   elements a and b, as a double
+//
+// These compute out[k] = in1[k*stride]/in2[k*stride] for the
+// n = ceil(len/stride) outputs, on gGa and gGb.  Each stride runs the output
+// counts of the length sweep, each with the shortest and the longest input
+// that gives that many outputs (the last output comes from the last input
+// element, or from stride-1 elements before it).  Negative and zero lengths
+// and strides must be a no-op.  The output runs in its own buffer and on top
+// of in1 or in2, and must not change anything past out[n-1]: in its own
+// buffer that is the sentinel, in place it is the rest of the input.  The two
+// largest strides only give one output, and put the offsets of the unused
+// lanes of the register past 2^31, where they wrap around.  The kernels load
+// small strides as whole registers, so on unix-like systems a fourth mode
+// puts the end of each input right before an inaccessible page: a read past
+// the end faults, and the fault is caught and reported.
+//==============================================================================
+#if defined(__unix__)
+// input buffers that end at an inaccessible page
+static sigjmp_buf gFaultJmp;
+static void onFault(int) { siglongjmp(gFaultJmp, 1); }
+struct GuardedBuf
+{
+  char*  base;
+  size_t bytes;
+  float* end;  // first float of the inaccessible page
+  explicit GuardedBuf(const size_t nfloats)
+  {
+    const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    const size_t data = (nfloats*sizeof(float) + page - 1)/page*page;
+    bytes = data + page;
+    base  = static_cast<char*>(mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if(base == MAP_FAILED || mprotect(base + data, page, PROT_NONE) != 0)
+    {
+      printf("mmap/mprotect failed\n");
+      exit(1);
+    }
+    end = reinterpret_cast<float*>(base + data);
+  }
+  ~GuardedBuf() { munmap(base, bytes); }
+};
+static const int GATHER_MODES = 4;
+#else
+static const int GATHER_MODES = 3;
+#endif
+
+template<class FEVM, class FREF>
+static void checkGather(const char* name, const double tol, FEVM runEvm,
+                        FREF ref)
+{
+  ++gTests;
+  long   compared = 0;
+  int    nbad = 0, nshown = 0, nstray = 0, nfault = 0;
+  double worstRel = 0.0;
+
+  // (len, stride) cases
+  std::vector<std::pair<int, int> > cases;
+  const int strides[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 16, 17, 33,
+                         64, 1000, 1<<28, std::numeric_limits<int>::max()};
+  for(const int s : strides)
+    for(size_t li=0; li<gLengths.size(); ++li)
+    {
+      const long long n = gLengths[li];
+      if(n <= 0) { cases.push_back(std::make_pair(gLengths[li], s)); continue; }
+      const long long shortest = (n-1)*s + 1, longest = n*s;
+      if(shortest <= GLEN) cases.push_back(std::make_pair(int(shortest), s));
+      if(longest <= GLEN && longest != shortest)
+        cases.push_back(std::make_pair(int(longest), s));
+    }
+  const int noop[][2] = {{100, 0}, {100, -1}, {100, -16}, {-5, 0}};
+  for(size_t c=0; c<sizeof(noop)/sizeof(noop[0]); ++c)
+    cases.push_back(std::make_pair(noop[c][0], noop[c][1]));
+  cases.push_back(std::make_pair(GLEN, 1<<28));
+  cases.push_back(std::make_pair(GLEN, std::numeric_limits<int>::max()));
+
+  std::vector<float> buf(GLEN + GUARD), before(GLEN + GUARD);
+  for(int k=0; k<GLEN+GUARD; ++k) buf[k] = sentinel<float>();
+#if defined(__unix__)
+  GuardedBuf ga(GLEN), gb(GLEN);
+#endif
+
+  // mode 0: separate buffers.  mode 1: out over in1.  mode 2: out over in2.
+  // mode 3: separate buffers, the inputs end at an inaccessible page.
+  for(int mode=0; mode<GATHER_MODES; ++mode)
+  {
+    const char* modeName = (mode==0) ? "" :
+                           (mode==1) ? " [in-place on in1]" :
+                           (mode==2) ? " [in-place on in2]" :
+                                       " [inputs end at a guard page]";
+    for(size_t c=0; c<cases.size(); ++c)
+    {
+      const int len    = cases[c].first;
+      const int stride = cases[c].second;
+      const int valid  = (len > 0) ? len : 0;
+      const int n      = (len > 0 && stride > 0) ? (len-1)/stride + 1 : 0;
+      const int span   = valid + GUARD; // floats checked
+
+      for(int k=0; k<span; ++k) buf[k] = sentinel<float>();
+      const float* a = gGa.data();
+      const float* b = gGb.data();
+      if(mode == 1)
+      {
+        for(int k=0; k<valid; ++k) buf[k] = gGa[k];
+        a = buf.data();
+      }
+      if(mode == 2)
+      {
+        for(int k=0; k<valid; ++k) buf[k] = gGb[k];
+        b = buf.data();
+      }
+      std::copy(buf.begin(), buf.begin()+span, before.begin());
+#if defined(__unix__)
+      if(mode == 3)
+      {
+        float* const ca = ga.end - valid;
+        float* const cb = gb.end - valid;
+        std::copy(gGa.begin(), gGa.begin()+valid, ca);
+        std::copy(gGb.begin(), gGb.begin()+valid, cb);
+        struct sigaction sa, old;
+        std::memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = onFault;
+        sigaction(SIGSEGV, &sa, &old);
+        const bool fault = (sigsetjmp(gFaultJmp, 1) != 0);
+        if(!fault) runEvm(ca, cb, len, stride, buf.data());
+        sigaction(SIGSEGV, &old, NULL);
+        if(fault)
+        {
+          ++nfault;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            printf("      len=%-5d stride=%-10d READ PAST THE END OF THE "
+                   "INPUT%s\n", len, stride, modeName);
+          }
+          continue;
+        }
+      }
+      else
+#endif
+      runEvm(a, b, len, stride, buf.data());
+
+      for(int k=0; k<span; ++k)
+      {
+        if(k < n) // must hold the quotient
+        {
+          const size_t j     = static_cast<size_t>(k)*stride;
+          const double want  = ref(gGa[j], gGb[j]);
+          const double adiff = std::abs(static_cast<double>(buf[k]) - want);
+          const double mag   = std::max(std::abs(want),
+              static_cast<double>(std::numeric_limits<float>::min()));
+          const double rdiff = adiff/mag;
+          ++compared;
+          if(rdiff <= tol)
+          {
+            if(rdiff > worstRel) worstRel = rdiff;
+            continue;
+          }
+          ++nbad;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            if(std::memcmp(&buf[k], &before[k], sizeof(float)) == 0)
+              printf("      len=%-5d stride=%-10d element %-5d NOT WRITTEN   "
+                     "baseline=%.9g%s\n", len, stride, k, want, modeName);
+            else
+              printf("      len=%-5d stride=%-10d element %-5d evm=%.9g "
+                     "baseline=%.9g reldiff=%.6g%s\n",
+                     len, stride, k, buf[k], want, rdiff, modeName);
+          }
+        }
+        // past the last output, must be left as it was
+        else if(std::memcmp(&buf[k], &before[k], sizeof(float)) != 0)
+        {
+          ++nstray;
+          if(nshown < MAX_REPORT)
+          {
+            ++nshown;
+            printf("      len=%-5d stride=%-10d element %-5d WROTE PAST END "
+                   "evm=%.9g was=%.9g%s\n",
+                   len, stride, k, buf[k], before[k], modeName);
+          }
+        }
+      }
+    }
+  }
+
+  const bool pass = (nbad == 0 && nstray == 0 && nfault == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, tol %.0e, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, tol, worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  if(nfault) printf(", %d read past the input", nfault);
+  printf("]\n");
+  if(nbad + nstray + nfault > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray + nfault - nshown);
 }
 
 //==============================================================================
@@ -1416,7 +1652,10 @@ int main(int argc, char** argv)
 
   //--- multe : out.real = in1 * in2, out.imag left as it was ---------------
   printf("\nmulte\n");
-  checkMulte("multe(float,float)", TOL_EXACT, Af, Bf);
+  checkExpand("multe(float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, complex<float>* o)
+      { EVM::multe(a, b, n, o); },
+    [](int k){ return static_cast<double>(gAf[k])*gBf[k]; });
 
   //--- remult / immult : out = in1 * real(in2) or in1 * imag(in2) -----------
   printf("\nremult / immult\n");
@@ -1634,6 +1873,98 @@ int main(int argc, char** argv)
           else EVM::divc2r(a,b,n,o); },
       [](int k){ return toCdbl(gAc[k]) / std::conj(toCdbl(gBc[k])); });
   }
+
+  //--- dive / divre / divnre : out.real = in1 / in2, out.imag as it was ----
+  printf("\ndive / divre / divnre\n");
+  checkExpand("dive(float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, complex<float>* o)
+      { EVM::dive(a, b, n, o); },
+    [](int k){ return static_cast<double>(gAf[k])/gBf[k]; });
+
+  checkExpand("divre(float,float)", TOL_RCP, Af, Bf,
+    [](const float* a, const float* b, int n, complex<float>* o)
+      { EVM::divre(a, b, n, o); },
+    [](int k){ return static_cast<double>(gAf[k])/gBf[k]; });
+
+  checkExpand("divnre(float,float)", TOL_NR, Af, Bf,
+    [](const float* a, const float* b, int n, complex<float>* o)
+      { EVM::divnre(a, b, n, o); },
+    [](int k){ return static_cast<double>(gAf[k])/gBf[k]; });
+
+  //--- divg / divrg / divnrg : out[k] = in1[k*stride] / in2[k*stride] -------
+  // the eps overloads divide by max(in2, eps) instead
+  printf("\ndivg / divrg / divnrg\n");
+  checkGather("divg(float,float)", TOL_EXACT,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divg(a, b, n, s, o); },
+    [](float a, float b){ return static_cast<double>(a)/b; });
+
+  checkGather("divg(float,float) eps", TOL_EXACT,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divg(a, b, n, s, o, GEPS); },
+    [](float a, float b){ return static_cast<double>(a)/std::max(b, GEPS); });
+
+  checkGather("divrg(float,float)", TOL_RCP,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divrg(a, b, n, s, o); },
+    [](float a, float b){ return static_cast<double>(a)/b; });
+
+  checkGather("divrg(float,float) eps", TOL_RCP,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divrg(a, b, n, s, o, GEPS); },
+    [](float a, float b){ return static_cast<double>(a)/std::max(b, GEPS); });
+
+  checkGather("divnrg(float,float)", TOL_NR,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divnrg(a, b, n, s, o); },
+    [](float a, float b){ return static_cast<double>(a)/b; });
+
+  checkGather("divnrg(float,float) eps", TOL_NR,
+    [](const float* a, const float* b, int n, int s, float* o)
+      { EVM::divnrg(a, b, n, s, o, GEPS); },
+    [](float a, float b){ return static_cast<double>(a)/std::max(b, GEPS); });
+
+  //--- divSqrt / divrSqrt / divnrSqrt : out = in1 / sqrt(max(in2, eps)) -----
+  // eps defaults to 0, those runs use the positive divisors gPf
+  printf("\ndivSqrt / divrSqrt / divnrSqrt\n");
+  check<complex<float>, float, complex<float> >(
+    "divSqrt(complex,float)", TOL_EXACT, Ac, gPf.data(),
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divSqrt(a, b, n, o); },
+    [](int k){ return toCdbl(gAc[k]) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<complex<float>, float, complex<float> >(
+    "divSqrt(complex,float) eps", TOL_EXACT, Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divSqrt(a, b, n, o, GEPS); },
+    [](int k)
+      { return toCdbl(gAc[k]) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<complex<float>, float, complex<float> >(
+    "divrSqrt(complex,float)", TOL_RCP, Ac, gPf.data(),
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divrSqrt(a, b, n, o); },
+    [](int k){ return toCdbl(gAc[k]) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<complex<float>, float, complex<float> >(
+    "divrSqrt(complex,float) eps", TOL_RCP, Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divrSqrt(a, b, n, o, GEPS); },
+    [](int k)
+      { return toCdbl(gAc[k]) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<complex<float>, float, complex<float> >(
+    "divnrSqrt(complex,float)", TOL_NR, Ac, gPf.data(),
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divnrSqrt(a, b, n, o); },
+    [](int k){ return toCdbl(gAc[k]) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<complex<float>, float, complex<float> >(
+    "divnrSqrt(complex,float) eps", TOL_NR, Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, complex<float>* o)
+      { EVM::divnrSqrt(a, b, n, o, GEPS); },
+    [](int k)
+      { return toCdbl(gAc[k]) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
 
   //--- dotp : sum of in1 * in2 ----------------------------------------------
   // the reference versions write the result to out, the by-value wrappers

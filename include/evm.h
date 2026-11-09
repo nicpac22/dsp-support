@@ -180,6 +180,27 @@
 //        with a reasonable tradeoff between accuracy and speed
 //    divc2r = point-by-point complex conjugate divide, second input conjugated,
 //        using fast reciprocal approximation without Newton-Raphson refinement
+//    dive = divide-expand, point-by-point divide of 2 real-valued input
+//        buffers, placing the result in the real part of a complex output
+//        buffer
+//    divre = same as dive but with a reciprocal approximation instead of a
+//        true divide
+//    divnre = same as dive but with a reciprocal approximation and 1-stage
+//        Newton-Raphson refinement (offers a good balance between speed and
+//        accuracy)
+//    divg = divide-gather, point-by-point divide of two real-valued input
+//        buffers using a gather operation to sample equally spaced elements
+//        (i.e. divides every Nth element) 
+//    divrg = same as divg but with a reciprocal approximation in place of true
+//        division
+//    divnrg = same as divg but with a reciprocal approximation and 1-stage
+//        Newton-Raphson refinement
+//    divSqrt = point-by-point divide of complex dividend by the square root of
+//        a real divisor
+//    divrSqrt = same as divSqrt but with a reciprocal square root
+//        approximation
+//    divnrSqrt = same as divSqrt but with a reciprocal squared root
+//        approximation and 1-stage Newton-Raphson refinement
 //
 //  Dot-product:
 //    dotp = dot-product of two input buffers
@@ -920,7 +941,170 @@ namespace EVM
   inline void divc2r(complex<float> const * const in1,
       complex<float> const * const in2, const int len,
       complex<float> * const out);
+      
+  // Point by point divide of two real-valued buffers with the result placed
+  // in the real part of each element of a complex output buffer, imaginary
+  // part left unset.  The output buffer may be the same as one of the input
+  // buffers.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements to process
+  //    out = output buffer to recieve result of division in the real part of
+  //        each element, imaginary part unmodified
+  inline void dive(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+  // Point by point divide of two real-valued buffers using a fast reciprocal
+  // approximation with the result placed in the real part of each element of
+  // a complex output buffer, imaginary part left unset.  The output buffer
+  // may be the same as one of the input buffers.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements to process
+  //    out = output buffer to recieve result of division in the real part of
+  //        each element, imaginary part unmodified
+  inline void divre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
+  // Point by point divide of two real-valued buffers using a fast reciprocal
+  // approximation and 1-stage Newton-Raphson refinement with the result placed
+  // in the real part of each element of a complex output buffer, imaginary
+  // part left unset.  The output buffer may be the same as one of the input
+  // buffers.  Note that due to the reciprocal approximation and
+  // Newton-Raphson stage, this method may produce different results than
+  // normal division when the divisor is a special floating point value (0
+  // yields NaN rather than INF, INF yields NaN rather than 0, and subnormals
+  // may yield NaN or -+INF with the wrong sign).
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements to process
+  //    out = output buffer to recieve result of division in the real part of
+  //        each element, imaginary part unmodified
+  inline void divnre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out);
   
+  // Point by point divide of two buffers, using a gather operation (i.e.
+  // downsampling by stride elements).  Output may be the same as one of the
+  // input buffers.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out);
+  // Alternate version that compares the divisor with a small epsilon to
+  // prevent divide by zero.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  //    eps = a small value to compare with the divisor to avoid divide by zero
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps);
+  // Point by point divide of two buffers with a fast reciprocal approximation,
+  // using a gather operation (i.e. downsampling by stride elements).  Output
+  // may be the same as one of the input buffers.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out);
+  // Alternate version that compares the divisor with a small epsilon to
+  // prevent divide by zero.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  //    eps = a small value to compare with the divisor to avoid divide by zero
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps);
+  // Point by point divide of two buffers with a fast reciprocal approximation
+  // and 1-stage Newton-Raphson refinement, using a gather operation (i.e.
+  // downsampling by stride elements).  Output may be the same as one of the
+  // input buffers.  Note that due to the reciprocal approximation and
+  // Newton-Raphson stage, this method may produce different results than
+  // normal division when the divisor is a special floating point value (0
+  // yields NaN rather than INF, INF yields NaN rather than 0, and subnormals
+  // may yield NaN or -+INF with the wrong sign).
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out);
+  // Alternate version that compares the divisor with a small epsilon to
+  // prevent divide by zero.
+  //    in1 = first input buffer, dividend
+  //    in2 = second input buffer, divisor
+  //    len = number of elements in the input buffers
+  //    stride = downsampling factor (stride in samples between computations)
+  //    out = output buffer to recieve result of division
+  //    eps = a small value to compare with the divisor to avoid divide by zero
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps);
+
+  // Point by point division of a complex dividend by the square root of a
+  // real divisor.  A small epsilon is compared with the divisor prior to
+  // taking the square root to avoid negative values and/or divide by zero.
+  // Output buffer may be the same as the complex input buffer but not the
+  // real input buffer.
+  //    in1 = first input buffer, complex-valued dividend
+  //    in2 = second input buffer, real-valued divisor
+  //    len = number of elements to process
+  //    out = output buffer to hold in1/sqrt(in2)
+  //    eps = small value to compare with divisor prior to taking square root 
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps);
+  // Same with eps = 0 (an overload rather than a default argument, which
+  // icpx does not apply to multiversioned functions)
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out);
+  // Point by point division of a complex dividend by the square root of a
+  // real divisor using a fast reciprocal square root approximation.  A small
+  // epsilon is compared with the divisor prior to taking the square root to
+  // avoid negative values and/or divide by zero.  Output buffer may be the
+  // same as the complex input buffer but not the real input buffer.
+  //    in1 = first input buffer, complex-valued dividend
+  //    in2 = second input buffer, real-valued divisor
+  //    len = number of elements to process
+  //    out = output buffer to hold in1/sqrt(in2)
+  //    eps = small value to compare with divisor prior to taking square root 
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps);
+  // Same with eps = 0 (an overload rather than a default argument, which
+  // icpx does not apply to multiversioned functions)
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out);
+  // Point by point division of a complex dividend by the square root of a
+  // real divisor using a fast reciprocal square root approximation with
+  // 1-stage Newton-Raphson refinement.  A small
+  // epsilon is compared with the divisor prior to taking the square root to
+  // avoid negative values and/or divide by zero.  Output buffer may be the
+  // same as the complex input buffer but not the real input buffer.  Note
+  // that due to the reciprocal square root approximation and Newton-Raphson
+  // stage, this method may produce different results than divSqrt when the
+  // divisor (after the comparison with eps) is a special floating point value
+  // (0 yields NaN rather than INF, INF yields NaN rather than 0, and
+  // subnormals may yield NaN or -INF).
+  //    in1 = first input buffer, complex-valued dividend
+  //    in2 = second input buffer, real-valued divisor
+  //    len = number of elements to process
+  //    out = output buffer to hold in1/sqrt(in2)
+  //    eps = small value to compare with divisor prior to taking square root 
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps);
+  // Same with eps = 0 (an overload rather than a default argument, which
+  // icpx does not apply to multiversioned functions)
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out);
+
   //=============//
   // Dot-Product //
   //=============//
@@ -12636,6 +12820,2229 @@ namespace EVM
       b.imag(-in2[i].imag()); // conj(in2[i])
       out[i] = in1[i]/b;
     }
+  }
+
+  // divide-expand
+  #if !defined(DISABLE_AVX512) // AVX512 dive
+  __attribute__((__target__("avx512f")))
+  inline void dive(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m512 ld1, ld2;
+    // indices to copy each quotient to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    const __mmask16 re = 0x5555; // real parts of 8 complex elements
+    int i = len&~15; // start of the final partial register
+    // handle remaining elements first (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2); // [Q0,Q1,...,Q15]
+      if(rem>8) // if remainder is > 8, need 2 registers worth
+      {
+        const __mmask16 mk2 = re & mask16((rem-8)<<1); // 2 floats per complex
+        ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld2);
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __mmask16 mk2 = re & mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk2, ld1);
+      }
+    }
+    for(i-=16; i>=0; i-=16) // process 16 real elements (2 output registers)
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_div_ps(ld1, ld2); // [Q0,Q1,...,Q15]
+      ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+      ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), re, ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 dive
+  #if !defined(DISABLE_AVX) // AVX dive
+  __attribute__((__target__("avx")))
+  inline void dive(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m256 ld1, ld2, sh;
+    const __m256i re = _mm256_setr_epi32(-1,0,-1,0,-1,0,-1,0); // real parts
+    int i = len&~7; // start of the final partial register
+    // handle remaining elements first (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer,
+      // integer and needs AVX2, so the masks are and'ed as floats
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_div_ps(ld1, ld2); // [Q0,Q1,Q2,Q3,Q4,Q5,Q6,Q7]
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2, ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2, ld1);
+      }
+    }
+    for(i-=8; i>=0; i-=8) // process 8 real elements (2 output registers)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_div_ps(ld1, ld2); // [Q0,Q1,Q2,Q3,Q4,Q5,Q6,Q7]
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+      ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), re, ld2);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX dive
+  // default dive
+  __attribute__((__target__("default")))
+  inline void dive(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=len-1; i>=0; --i) out[i].real(in1[i]/in2[i]);
+    return;
+  }
+  
+  // divide-expand with reciprocal multiply
+  #if !defined(DISABLE_AVX512) // AVX512 divre
+  __attribute__((__target__("avx512f")))
+  inline void divre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m512 ld1, ld2;
+    // indices to copy each quotient to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    const __mmask16 re = 0x5555; // real parts of 8 complex elements
+    int i = len&~15; // start of the final partial register
+    // handle remaining elements first (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2)); // in1/in2
+      if(rem>8) // if remainder is > 8, need 2 registers worth
+      {
+        const __mmask16 mk2 = re & mask16((rem-8)<<1); // 2 floats per complex
+        ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld2);
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __mmask16 mk2 = re & mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk2, ld1);
+      }
+    }
+    for(i-=16; i>=0; i-=16) // process 16 real elements (2 output registers)
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2)); // [Q0,Q1,...,Q15]
+      ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+      ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), re, ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divre
+  #if !defined(DISABLE_AVX2) // AVX2 divre
+  __attribute__((__target__("avx2")))
+  inline void divre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m256 ld1, ld2;
+    // indices to copy each quotient to both parts of a complex element
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256i re = _mm256_setr_epi32(-1,0,-1,0,-1,0,-1,0); // real parts
+    int i = len&~7; // start of the final partial register
+    // handle remaining elements first (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2)); // [Q0,Q1,...,Q7]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_and_si256(re, _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1])));
+        ld2 = _mm256_permutevar8x32_ps(ld1, p2); // [Q4,Q4,Q5,Q5,Q6,Q6,Q7,Q7]
+        ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2, ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_and_si256(re, _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1])));
+        ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2, ld1);
+      }
+    }
+    for(i-=8; i>=0; i-=8) // process 8 real elements (2 output registers)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2)); // [Q0,Q1,...,Q7]
+      ld2 = _mm256_permutevar8x32_ps(ld1, p2); // [Q4,Q4,Q5,Q5,Q6,Q6,Q7,Q7]
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), re, ld2);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divre
+  #if !defined(DISABLE_AVX) // AVX divre
+  __attribute__((__target__("avx")))
+  inline void divre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m256 ld1, ld2, sh;
+    const __m256i re = _mm256_setr_epi32(-1,0,-1,0,-1,0,-1,0); // real parts
+    int i = len&~7; // start of the final partial register
+    // handle remaining elements first (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer,
+      // integer and needs AVX2, so the masks are and'ed as floats
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2)); // [Q0,Q1,...,Q7]
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2, ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2, ld1);
+      }
+    }
+    for(i-=8; i>=0; i-=8) // process 8 real elements (2 output registers)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2)); // [Q0,Q1,...,Q7]
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+      ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), re, ld2);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divre
+  // default divre
+  __attribute__((__target__("default")))
+  inline void divre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=len-1; i>=0; --i) out[i].real(in1[i]/in2[i]);
+    return;
+  }
+
+  // divide-expand with reciprocal multiply and 1-stage Newton-Raphson
+  #if !defined(DISABLE_AVX512) // AVX512 divnre
+  __attribute__((__target__("avx512f")))
+  inline void divnre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m512 ld1, ld2, inv, q;
+    // indices to copy each quotient to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    const __mmask16 re = 0x5555; // real parts of 8 complex elements
+    int i = len&~15; // start of the final partial register
+    // handle remaining elements first (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm512_maskz_rcp14_ps(mk, ld2); // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      if(rem>8) // if remainder is > 8, need 2 registers worth
+      {
+        const __mmask16 mk2 = re & mask16((rem-8)<<1); // 2 floats per complex
+        ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld2);
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __mmask16 mk2 = re & mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk2, ld1);
+      }
+    }
+    for(i-=16; i>=0; i-=16) // process 16 real elements (2 output registers)
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      inv = _mm512_rcp14_ps(ld2);          // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      ld2 = _mm512_permutexvar_ps(p2, ld1); // [Q8,Q8,Q9,Q9,...,Q15,Q15]
+      ld1 = _mm512_permutexvar_ps(p1, ld1); // [Q0,Q0,Q1,Q1,...,Q7,Q7]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), re, ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divnre
+  #if !defined(DISABLE_AVX2) // AVX2 divnre
+  __attribute__((__target__("avx2,fma")))
+  inline void divnre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m256 ld1, ld2, inv, q;
+    // indices to copy each quotient to both parts of a complex element
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    const __m256i re = _mm256_setr_epi32(-1,0,-1,0,-1,0,-1,0); // real parts
+    int i = len&~7; // start of the final partial register
+    // handle remaining elements first (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_and_si256(re, _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1])));
+        ld2 = _mm256_permutevar8x32_ps(ld1, p2); // [Q4,Q4,Q5,Q5,Q6,Q6,Q7,Q7]
+        ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2, ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_and_si256(re, _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1])));
+        ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2, ld1);
+      }
+    }
+    for(i-=8; i>=0; i-=8) // process 8 real elements (2 output registers)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      ld2 = _mm256_permutevar8x32_ps(ld1, p2); // [Q4,Q4,Q5,Q5,Q6,Q6,Q7,Q7]
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // [Q0,Q0,Q1,Q1,Q2,Q2,Q3,Q3]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), re, ld2);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divnre
+  #if !defined(DISABLE_AVX) // AVX divnre
+  __attribute__((__target__("avx")))
+  inline void divnre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the output is 2x the size of the input, so to work in place the
+    // buffers are processed from the end to the start, that way each store
+    // only overwrites input that has already been loaded, and only the real
+    // parts are stored (masked) so the imaginary parts are left as they were
+    __m256 ld1, ld2, sh, inv;
+    const __m256i re = _mm256_setr_epi32(-1,0,-1,0,-1,0,-1,0); // real parts
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    int i = len&~7; // start of the final partial register
+    // handle remaining elements first (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer,
+      // integer and needs AVX2, so the masks are and'ed as floats
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      // in1/in2 from a reciprocal approximation and one newton-raphson
+      // stage (new = old*(2-orig*old))
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2, ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_castps_si256(_mm256_and_ps(
+            _mm256_castsi256_ps(re), _mm256_castsi256_ps(_mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1])))));
+        ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2, ld1);
+      }
+    }
+    for(i-=8; i>=0; i-=8) // process 8 real elements (2 output registers)
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sh = _mm256_unpacklo_ps(ld1, ld1); // [Q0,Q0,Q1,Q1,Q4,Q4,Q5,Q5]
+      ld2 = _mm256_unpackhi_ps(ld1, ld1); // [Q2,Q2,Q3,Q3,Q6,Q6,Q7,Q7]
+      ld1 = _mm256_permute2f128_ps(sh, ld2, 0x20); // [Q0,Q0,...,Q3,Q3]
+      ld2 = _mm256_permute2f128_ps(sh, ld2, 0x31); // [Q4,Q4,...,Q7,Q7]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), re, ld2);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), re, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divnre
+  // default divnre
+  __attribute__((__target__("default")))
+  inline void divnre(float const * const in1, float const * const in2,
+      const int len, complex<float> * const out)
+  {
+    for(int i=len-1; i>=0; --i) out[i].real(in1[i]/in2[i]);
+    return;
+  }
+  
+  // divide-gather helpers
+  // The divide-gather functions load every stride-th float of their inputs.
+  // For small strides the floats of a register are taken out of the whole
+  // registers that hold them with permutes (stride loads per register instead
+  // of one per float), for larger strides each float is loaded on its own and
+  // inserted.  Both are faster than the gather instructions on CPUs with the
+  // Gather Data Sampling microcode mitigation (Intel Skylake through Ice Lake,
+  // Tiger Lake and Rocket Lake), where every gather takes about 28 cycles, and
+  // the permutes also use fewer loads than a gather on other CPUs.  The
+  // helpers are only called from the divide-gather functions of their own
+  // instruction set (they are not multiversioned).
+
+  // largest stride the AVX512 divide-gather functions load with permutes,
+  // beyond it the loads and inserts are faster (stride 8 still gains 25-45%
+  // with aligned buffers, but loses about 30% on buffers that are not 64 byte
+  // aligned and come from L2, where every register load spans two lines)
+  inline constexpr int STRIDED_PERM_MAX = 8;
+  static_assert(STRIDED_PERM_MAX >= 2 && STRIDED_PERM_MAX <= 8,
+      "stridedLoad512 handles strides up to 8 with permutes");
+
+  // Sets the permute indices for stridedLoad512.  Lane k of a register takes
+  // float k*stride, which is element (k*stride)%16 of register (k*stride)/16:
+  // idx[0] combines registers 0 and 1, then idx[t] adds register t+1 while
+  // keeping the lanes already found (permutex2var takes element i of its
+  // second source as index 16+i)
+  //    stride = distance between the floats to load
+  //    idx = receives stride-1 index registers if 2 <= stride <=
+  //        STRIDED_PERM_MAX, otherwise left unset
+  __attribute__((__target__("avx512f"), __always_inline__))
+  inline void stridedIdx512(const int stride, __m512i * const idx)
+  {
+    if(stride<2 || stride>STRIDED_PERM_MAX) return;
+    const __m512i lane = _mm512_setr_epi32(0,1,2,3,4,5,6,7,8,9,10,11,12,13,
+        14,15);
+    const __m512i pos = _mm512_mullo_epi32(lane, _mm512_set1_epi32(stride));
+    const __m512i reg = _mm512_srli_epi32(pos, 4);
+    const __m512i off = _mm512_and_si512(pos, _mm512_set1_epi32(15));
+    const __m512i off2 = _mm512_or_si512(off, _mm512_set1_epi32(16));
+    idx[0] = _mm512_mask_blend_epi32(_mm512_cmpeq_epi32_mask(reg,
+        _mm512_set1_epi32(1)), off, off2);
+    for(int t=1; t<stride-1; ++t)
+      idx[t] = _mm512_mask_blend_epi32(_mm512_cmpeq_epi32_mask(reg,
+          _mm512_set1_epi32(t+1)), lane, off2);
+  }
+
+  // Loads 16 floats from p, or with TAIL only the first n of them (n may be
+  // <= 0 or > 16), the rest are set to 0
+  template<bool TAIL>
+  __attribute__((__target__("avx512f"), __always_inline__))
+  inline __m512 stridedPart512(float const * const p, const int n)
+  {
+    if constexpr (TAIL)
+      return _mm512_maskz_loadu_ps(mask16(std::min(std::max(n, 0), 16)), p);
+    else
+      return _mm512_loadu_ps(p);
+  }
+
+  // Returns p[0], p[stride], ..., p[15*stride] for the AVX512 divide-gather
+  // functions.  Without TAIL all 16*stride floats from p may be read.  With
+  // TAIL only the first cnt lanes are needed and nothing at or past p[avail]
+  // is read, the other lanes are 0 or repeat the last float.
+  //    p = first float to load
+  //    stride = distance between the floats to load
+  //    idx = permute indices from stridedIdx512
+  //    avail = (TAIL only) number of floats that may be read from p
+  //    cnt = (TAIL only) number of lanes needed, 1 to 16
+  template<bool TAIL>
+  __attribute__((__target__("avx512f"), __always_inline__))
+  inline __m512 stridedLoad512(float const * const p, const int stride,
+      __m512i const * const idx, const int avail, const int cnt)
+  {
+    if(stride == 1) return stridedPart512<TAIL>(p, cnt);
+    if(stride <= STRIDED_PERM_MAX) // permutes of the stride registers
+    {
+      __m512 r = _mm512_permutex2var_ps(stridedPart512<TAIL>(p, avail), idx[0],
+          stridedPart512<TAIL>(p+16, avail-16));
+      // each further register only sets its own lanes, so the order doesn't
+      // matter (a switch jumps straight in instead of testing each step)
+      switch(stride)
+      {
+        case 8: r = _mm512_permutex2var_ps(r, idx[6],
+                    stridedPart512<TAIL>(p+112, avail-112)); [[fallthrough]];
+        case 7: r = _mm512_permutex2var_ps(r, idx[5],
+                    stridedPart512<TAIL>(p+96, avail-96)); [[fallthrough]];
+        case 6: r = _mm512_permutex2var_ps(r, idx[4],
+                    stridedPart512<TAIL>(p+80, avail-80)); [[fallthrough]];
+        case 5: r = _mm512_permutex2var_ps(r, idx[3],
+                    stridedPart512<TAIL>(p+64, avail-64)); [[fallthrough]];
+        case 4: r = _mm512_permutex2var_ps(r, idx[2],
+                    stridedPart512<TAIL>(p+48, avail-48)); [[fallthrough]];
+        case 3: r = _mm512_permutex2var_ps(r, idx[1],
+                    stridedPart512<TAIL>(p+32, avail-32)); [[fallthrough]];
+        default: break;
+      }
+      return r;
+    }
+    // each float on its own (two 8 float halves)
+    const size_t s = stride;
+    __m256 lo, hi;
+    if constexpr (TAIL)
+    {
+      size_t o[16]; // offset of each lane, the unused ones repeat the last
+      for(int k=0; k<16; ++k) o[k] = std::min(k, cnt-1)*s;
+      lo = _mm256_setr_ps(p[o[0]], p[o[1]], p[o[2]], p[o[3]], p[o[4]],
+          p[o[5]], p[o[6]], p[o[7]]);
+      hi = _mm256_setr_ps(p[o[8]], p[o[9]], p[o[10]], p[o[11]], p[o[12]],
+          p[o[13]], p[o[14]], p[o[15]]);
+    }
+    else
+    {
+      float const * const q = p + 8*s;
+      lo = _mm256_setr_ps(p[0], p[s], p[2*s], p[3*s], p[4*s], p[5*s], p[6*s],
+          p[7*s]);
+      hi = _mm256_setr_ps(q[0], q[s], q[2*s], q[3*s], q[4*s], q[5*s], q[6*s],
+          q[7*s]);
+    }
+    return _mm512_castpd_ps(_mm512_insertf64x4(_mm512_castps_pd(
+        _mm512_castps256_ps512(lo)), _mm256_castps_pd(hi), 1));
+  }
+
+  // Loads 8 floats from p, or with TAIL only the first n of them (n may be
+  // <= 0 or > 8), the rest are set to 0
+  template<bool TAIL>
+  __attribute__((__target__("avx"), __always_inline__))
+  inline __m256 stridedPartAvx(float const * const p, const int n)
+  {
+    if constexpr (TAIL)
+      return _mm256_maskload_ps(p, _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(std::max(n, 0),
+          8)])));
+    else
+      return _mm256_loadu_ps(p);
+  }
+
+  // Returns p[0], p[stride], ..., p[7*stride] for the AVX divide-gather
+  // functions (and the strides the AVX2 ones don't handle themselves).
+  // Without TAIL all 8*stride floats from p may be read.  With TAIL only the
+  // first cnt lanes are needed and nothing at or past p[avail] is read, the
+  // other lanes are 0 or repeat the last float.
+  //    p = first float to load
+  //    stride = distance between the floats to load
+  //    avail = (TAIL only) number of floats that may be read from p
+  //    cnt = (TAIL only) number of lanes needed, 1 to 8
+  template<bool TAIL>
+  __attribute__((__target__("avx"), __always_inline__))
+  inline __m256 stridedLoadAvx(float const * const p, const int stride,
+      const int avail, const int cnt)
+  {
+    if(stride == 1) return stridedPartAvx<TAIL>(p, cnt);
+    if(stride == 2) // the even floats of two registers
+    {
+      const __m256 a = stridedPartAvx<TAIL>(p, avail);
+      const __m256 b = stridedPartAvx<TAIL>(p+8, avail-8);
+      return _mm256_shuffle_ps(_mm256_permute2f128_ps(a, b, 0x20),
+          _mm256_permute2f128_ps(a, b, 0x31), 0x88);
+    }
+    // each float on its own
+    const size_t s = stride;
+    if constexpr (TAIL)
+    {
+      size_t o[8]; // offset of each lane, the unused ones repeat the last
+      for(int k=0; k<8; ++k) o[k] = std::min(k, cnt-1)*s;
+      return _mm256_setr_ps(p[o[0]], p[o[1]], p[o[2]], p[o[3]], p[o[4]],
+          p[o[5]], p[o[6]], p[o[7]]);
+    }
+    else
+      return _mm256_setr_ps(p[0], p[s], p[2*s], p[3*s], p[4*s], p[5*s],
+          p[6*s], p[7*s]);
+  }
+
+  // Same as stridedLoadAvx for the AVX2 divide-gather functions, with
+  // strides 2 to 4 taken out of whole registers with AVX2 permutes
+  template<bool TAIL>
+  __attribute__((__target__("avx2"), __always_inline__))
+  inline __m256 stridedLoadAvx2(float const * const p, const int stride,
+      const int avail, const int cnt)
+  {
+    if(stride == 2)
+    {
+      // [P0,P2,P8,P10,P4,P6,P12,P14], then swap the middle pairs
+      const __m256 x = _mm256_shuffle_ps(stridedPartAvx<TAIL>(p, avail),
+          stridedPartAvx<TAIL>(p+8, avail-8), 0x88);
+      return _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(x),
+          0xd8));
+    }
+    if(stride == 3)
+    {
+      // lane k is element (3*k)%8 of register (3*k)/8
+      const __m256i ix = _mm256_setr_epi32(0,3,6,1,4,7,2,5);
+      __m256 x = _mm256_permutevar8x32_ps(stridedPartAvx<TAIL>(p, avail), ix);
+      x = _mm256_blend_ps(x, _mm256_permutevar8x32_ps(
+          stridedPartAvx<TAIL>(p+8, avail-8), ix), 0x38);
+      return _mm256_blend_ps(x, _mm256_permutevar8x32_ps(
+          stridedPartAvx<TAIL>(p+16, avail-16), ix), 0xc0);
+    }
+    if(stride == 4)
+    {
+      // [P0,P2,P8,P10,P4,P6,P12,P14] and [P16,P18,P24,P26,P20,P22,P28,P30]
+      // give [P0,P8,P16,P24,P4,P12,P20,P28], then put the lanes in order
+      const __m256 x = _mm256_shuffle_ps(stridedPartAvx<TAIL>(p, avail),
+          stridedPartAvx<TAIL>(p+8, avail-8), 0x88);
+      const __m256 y = _mm256_shuffle_ps(stridedPartAvx<TAIL>(p+16, avail-16),
+          stridedPartAvx<TAIL>(p+24, avail-24), 0x88);
+      return _mm256_permutevar8x32_ps(_mm256_shuffle_ps(x, y, 0x88),
+          _mm256_setr_epi32(0,4,1,5,2,6,3,7));
+    }
+    return stridedLoadAvx<TAIL>(p, stride, avail, cnt);
+  }
+
+  // divide-gather
+  #if !defined(DISABLE_AVX512) // AVX512 divg
+  __attribute__((__target__("avx512f")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divg
+  #if !defined(DISABLE_AVX2) // AVX2 divg
+  __attribute__((__target__("avx2")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divg
+  #if !defined(DISABLE_AVX) // AVX divg
+  __attribute__((__target__("avx")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divg
+  // default divg
+  __attribute__((__target__("default")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/in2[i];
+    return;
+  }
+  
+  // divide-gather with epsilon to prevent divide by zero
+  #if !defined(DISABLE_AVX512) // AVX512 divg
+  __attribute__((__target__("avx512f")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divg
+  #if !defined(DISABLE_AVX2) // AVX2 divg
+  __attribute__((__target__("avx2")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divg
+  #if !defined(DISABLE_AVX) // AVX divg
+  __attribute__((__target__("avx")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divg
+  // default divg
+  __attribute__((__target__("default")))
+  inline void divg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/std::max(in2[i], eps);
+    return;
+  }
+  
+  // divide-gather with fast reciprocal multiply
+  #if !defined(DISABLE_AVX512) // AVX512 divrg
+  __attribute__((__target__("avx512f")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divrg
+  #if !defined(DISABLE_AVX2) // AVX2 divrg
+  __attribute__((__target__("avx2")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divrg
+  #if !defined(DISABLE_AVX) // AVX divrg
+  __attribute__((__target__("avx")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divrg
+  // default divrg
+  __attribute__((__target__("default")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/in2[i];
+    return;
+  }
+  
+  // divide-gather with fast reciprocal multiply and epsilon to prevent divide
+  // by zero
+  #if !defined(DISABLE_AVX512) // AVX512 divrg
+  __attribute__((__target__("avx512f")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divrg
+  #if !defined(DISABLE_AVX2) // AVX2 divrg
+  __attribute__((__target__("avx2")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divrg
+  #if !defined(DISABLE_AVX) // AVX divrg
+  __attribute__((__target__("avx")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divrg
+  // default divrg
+  __attribute__((__target__("default")))
+  inline void divrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/std::max(in2[i], eps);
+    return;
+  }
+  
+  // divide-gather with fast reciprocal multiply and 1-stage Newton-Raphson
+  // refinement
+  #if !defined(DISABLE_AVX512) // AVX512 divnrg
+  __attribute__((__target__("avx512f")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2, inv, q;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm512_rcp14_ps(ld2);          // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      inv = _mm512_maskz_rcp14_ps(mk, ld2); // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divnrg
+  #if !defined(DISABLE_AVX2) // AVX2 divnrg
+  __attribute__((__target__("avx2,fma")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2, inv, q;
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divnrg
+  #if !defined(DISABLE_AVX) // AVX divnrg
+  __attribute__((__target__("avx")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2, inv;
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      // in1/in2 from a reciprocal approximation and one newton-raphson
+      // stage (new = old*(2-orig*old))
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divnrg
+  // default divnrg
+  __attribute__((__target__("default")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/in2[i];
+    return;
+  }
+  
+  // divide-gather with fast reciprocal multiply, 1-stage Newton-Raphson
+  // refinement, and epsilon to prevent divide by zero
+  #if !defined(DISABLE_AVX512) // AVX512 divnrg
+  __attribute__((__target__("avx512f")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m512 ld1, ld2, inv, q;
+    __m512i idx[STRIDED_PERM_MAX-1]; // permute indices for small strides
+    stridedIdx512(stride, idx);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 16*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~15;
+    int i = 0;
+    for(; i<nm; i+=16) // process 16 real elements per register
+    {
+      ld1 = stridedLoad512<false>(&in1[i*s], stride, idx, 0, 16);
+      ld2 = stridedLoad512<false>(&in2[i*s], stride, idx, 0, 16);
+      ld2 = _mm512_max_ps(ep, ld2);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm512_rcp14_ps(ld2);          // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 16 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoad512<true>(&in1[i*s], stride, idx, avail, rem);
+      ld2 = stridedLoad512<true>(&in2[i*s], stride, idx, avail, rem);
+      ld2 = _mm512_max_ps(ep, ld2);
+      inv = _mm512_maskz_rcp14_ps(mk, ld2); // r
+      q = _mm512_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm512_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm512_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 divnrg
+  #if !defined(DISABLE_AVX2) // AVX2 divnrg
+  __attribute__((__target__("avx2,fma")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2, inv, q;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx2<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx2<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      // in1/in2 from a reciprocal approximation r and one newton-raphson
+      // stage applied to the quotient rather than to r (q = q0+r*(in1-in2*q0)
+      // with q0 = in1*r), with FMA this costs the same and is more accurate
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx2<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx2<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      inv = _mm256_rcp_ps(ld2);            // r
+      q = _mm256_mul_ps(ld1, inv);         // q0 = in1*r
+      ld1 = _mm256_fnmadd_ps(ld2, q, ld1); // in1-in2*q0
+      ld1 = _mm256_fmadd_ps(ld1, inv, q);  // q0+r*(in1-in2*q0)
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 divnrg
+  #if !defined(DISABLE_AVX) // AVX divnrg
+  __attribute__((__target__("avx")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(len<=0 || stride<=0) return;
+    __m256 ld1, ld2, inv;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // constant for newton-raphson refinement of reciprocal approximation
+    const __m256 two = _mm256_set1_ps(2.0f);
+    const size_t s = stride;
+    const int n = (len-1)/stride + 1; // number of outputs
+    // note: the main loop only takes registers whose inputs (up to 8*stride
+    // floats) all lie inside the buffers, and in place each store only
+    // overwrites input that has already been read since output k is computed
+    // from input k*stride >= k
+    const int nm = (len/stride)&~7;
+    int i = 0;
+    for(; i<nm; i+=8) // process 8 real elements per register
+    {
+      ld1 = stridedLoadAvx<false>(&in1[i*s], stride, 0, 8);
+      ld2 = stridedLoadAvx<false>(&in2[i*s], stride, 0, 8);
+      ld2 = _mm256_max_ps(ep, ld2);
+      // in1/in2 from a reciprocal approximation and one newton-raphson
+      // stage (new = old*(2-orig*old))
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle the remaining 1 to 8 elements, reading nothing past the end
+    const int rem = n-i;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      const int avail = len-i*stride; // input floats left
+      ld1 = stridedLoadAvx<true>(&in1[i*s], stride, avail, rem);
+      ld2 = stridedLoadAvx<true>(&in2[i*s], stride, avail, rem);
+      ld2 = _mm256_max_ps(ep, ld2);
+      inv = _mm256_rcp_ps(ld2);      // old
+      ld2 = _mm256_mul_ps(ld2, inv); // orig*old
+      ld2 = _mm256_sub_ps(two, ld2); // 2-orig*old
+      ld2 = _mm256_mul_ps(ld2, inv); // old*(2-orig*old)
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX divnrg
+  // default divnrg
+  __attribute__((__target__("default")))
+  inline void divnrg(float const * const in1, float const * const in2,
+      const int len, const int stride, float * const out, const float eps)
+  {
+    if(stride<=0) return;
+    int idx = 0;
+    for(int i=0; i<len; i+=stride) out[idx++] = in1[i]/std::max(in2[i], eps);
+    return;
+  }
+
+  // in1 / sqrtf(in2) with epsilon to prevent negative sqrt/divide by zero
+  #if !defined(DISABLE_AVX512) // AVX512 divSqrt
+  __attribute__((__target__("avx512f")))
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, ld3, sc;
+    // indices to copy each real to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      // 1/sqrt(in2) with a square root and a single divide, then spread
+      // it to each complex
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld1 = _mm512_div_ps(one, ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld1 = _mm512_maskz_div_ps(mask16(rem), one, ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk, ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld1 = _mm512_maskz_div_ps(mask16(rem), one, ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 divSqrt
+  #if !defined(DISABLE_AVX) // AVX divSqrt
+  __attribute__((__target__("avx")))
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ld3, sc, tmp;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_max_ps(ep, ld1);
+      // 1/sqrt(in2) with a square root and a single divide, then spread
+      // it to each complex
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld1 = _mm256_div_ps(one, ld1);
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+      ld2 = _mm256_mul_ps(ld2, tmp);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = _mm256_max_ps(ep, ld1);
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld1 = _mm256_div_ps(one, ld1);
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk2);
+        ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk2);
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX divSqrt
+  // default divSqrt
+  __attribute__((__target__("default")))
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/sqrtf(std::max(in2[i], eps));
+    return;
+  }
+
+  // divSqrt with eps = 0, defined after every target version of divSqrt so
+  // that it calls the dispatcher
+  inline void divSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out)
+  {
+    divSqrt(in1, in2, len, out, 0.0f);
+  }
+ 
+  // in1 / sqrtf(in2) with epsilon to prevent negative sqrt/divide by zero
+  // using a fast reciprocal square root
+  #if !defined(DISABLE_AVX512) // AVX512 divrSqrt
+  __attribute__((__target__("avx512f")))
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, ld3, sc;
+    // indices to copy each real to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      ld1 = _mm512_rsqrt14_ps(ld1); // 1/sqrt(in2)
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      ld1 = _mm512_maskz_rsqrt14_ps(mask16(rem), ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk, ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      ld1 = _mm512_maskz_rsqrt14_ps(mask16(rem), ld1);
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 divrSqrt
+  #if !defined(DISABLE_AVX2) // AVX2 divrSqrt
+  __attribute__((__target__("avx2")))
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ld3, sc;
+    // indices to copy each real to both parts of a complex element
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_max_ps(ep, ld1);
+      ld1 = _mm256_rsqrt_ps(ld1); // 1/sqrt(in2)
+      sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2); // [R4,R4,R5,R5,R6,R6,R7,R7]
+      ld2 = _mm256_mul_ps(ld2, sc);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = _mm256_max_ps(ep, ld1);
+      ld1 = _mm256_rsqrt_ps(ld1);
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2); // [R4,R4,R5,R5,R6,R6,R7,R7]
+        ld2 = _mm256_mul_ps(ld2, sc);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+        ld2 = _mm256_mul_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX2 divrSqrt
+  #if !defined(DISABLE_AVX) // AVX divrSqrt
+  __attribute__((__target__("avx")))
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ld3, sc, tmp;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_max_ps(ep, ld1);
+      ld1 = _mm256_rsqrt_ps(ld1); // 1/sqrt(in2)
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+      ld2 = _mm256_mul_ps(ld2, tmp);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = _mm256_max_ps(ep, ld1);
+      ld1 = _mm256_rsqrt_ps(ld1);
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk2);
+        ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk2);
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX divrSqrt
+  // default divrSqrt
+  __attribute__((__target__("default")))
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/sqrtf(std::max(in2[i], eps));
+    return;
+  }
+
+  // divrSqrt with eps = 0, defined after every target version of divrSqrt so
+  // that it calls the dispatcher
+  inline void divrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out)
+  {
+    divrSqrt(in1, in2, len, out, 0.0f);
+  }
+
+  // in1 / sqrtf(in2) with epsilon to prevent negative sqrt/divide by zero
+  // using a fast reciprocal square root and 1-stage Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 divnrSqrt
+  __attribute__((__target__("avx512f")))
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, ld3, sc, inv;
+    // indices to copy each real to both parts of a complex element
+    const __m512i p1 = _mm512_setr_epi32(0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7);
+    const __m512i p2 = _mm512_setr_epi32(8,8,9,9,10,10,11,11,12,12,13,13,14,14,
+        15,15);
+    // constants for newton-raphson refinement of reciprocal square root
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      // 1/sqrt(in2) from a reciprocal square root approximation r and
+      // one newton-raphson stage in residual form, r+0.5*r*(1-in2*r*r),
+      // which with FMA is more accurate than 0.5*r*(3-in2*r*r)
+      inv = _mm512_rsqrt14_ps(ld1);          // r
+      ld1 = _mm512_mul_ps(ld1, inv);         // in2*r
+      ld1 = _mm512_fnmadd_ps(ld1, inv, one); // 1-in2*r*r
+      sc = _mm512_mul_ps(inv, half);         // 0.5*r
+      ld1 = _mm512_fmadd_ps(ld1, sc, inv);   // r+0.5*r*(1-in2*r*r)
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld3);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem>8) // if remainder is > 8, need 2 registers worth
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      inv = _mm512_maskz_rsqrt14_ps(mask16(rem), ld1); // r
+      ld1 = _mm512_mul_ps(ld1, inv);         // in2*r
+      ld1 = _mm512_fnmadd_ps(ld1, inv, one); // 1-in2*r*r
+      sc = _mm512_mul_ps(inv, half);         // 0.5*r
+      ld1 = _mm512_fmadd_ps(ld1, sc, inv);   // r+0.5*r*(1-in2*r*r)
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld1 = _mm512_permutexvar_ps(p2, ld1); // [R8,R8,R9,R9,...,R15,R15]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      ld3 = _mm512_mul_ps(ld3, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk, ld3);
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in2[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in1[i]));
+      ld1 = _mm512_max_ps(ep, ld1);
+      inv = _mm512_maskz_rsqrt14_ps(mask16(rem), ld1); // r
+      ld1 = _mm512_mul_ps(ld1, inv);         // in2*r
+      ld1 = _mm512_fnmadd_ps(ld1, inv, one); // 1-in2*r*r
+      sc = _mm512_mul_ps(inv, half);         // 0.5*r
+      ld1 = _mm512_fmadd_ps(ld1, sc, inv);   // r+0.5*r*(1-in2*r*r)
+      sc = _mm512_permutexvar_ps(p1, ld1);  // [R0,R0,R1,R1,...,R7,R7]
+      ld2 = _mm512_mul_ps(ld2, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 divnrSqrt
+  #if !defined(DISABLE_AVX2) // AVX2 divnrSqrt
+  __attribute__((__target__("avx2,fma")))
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ld3, sc, inv;
+    // indices to copy each real to both parts of a complex element
+    const __m256i p1 = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+    const __m256i p2 = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+    // constants for newton-raphson refinement of reciprocal square root
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_max_ps(ep, ld1);
+      // 1/sqrt(in2) from a reciprocal square root approximation r and
+      // one newton-raphson stage in residual form, r+0.5*r*(1-in2*r*r),
+      // which with FMA is more accurate than 0.5*r*(3-in2*r*r)
+      inv = _mm256_rsqrt_ps(ld1);            // r
+      ld1 = _mm256_mul_ps(ld1, inv);         // in2*r
+      ld1 = _mm256_fnmadd_ps(ld1, inv, one); // 1-in2*r*r
+      sc = _mm256_mul_ps(inv, half);         // 0.5*r
+      ld1 = _mm256_fmadd_ps(ld1, sc, inv);   // r+0.5*r*(1-in2*r*r)
+      sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2); // [R4,R4,R5,R5,R6,R6,R7,R7]
+      ld2 = _mm256_mul_ps(ld2, sc);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = _mm256_max_ps(ep, ld1);
+      inv = _mm256_rsqrt_ps(ld1);            // r
+      ld1 = _mm256_mul_ps(ld1, inv);         // in2*r
+      ld1 = _mm256_fnmadd_ps(ld1, inv, one); // 1-in2*r*r
+      sc = _mm256_mul_ps(inv, half);         // 0.5*r
+      ld1 = _mm256_fmadd_ps(ld1, sc, inv);   // r+0.5*r*(1-in2*r*r)
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2); // [R4,R4,R5,R5,R6,R6,R7,R7]
+        ld2 = _mm256_mul_ps(ld2, sc);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk2);
+        sc = _mm256_permutevar8x32_ps(ld1, p1);  // [R0,R0,R1,R1,R2,R2,R3,R3]
+        ld2 = _mm256_mul_ps(ld2, sc);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX2 divnrSqrt
+  #if !defined(DISABLE_AVX) // AVX divnrSqrt
+  __attribute__((__target__("avx")))
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ld3, sc, tmp, inv;
+    // constants for newton-raphson refinement of reciprocal square root
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 three = _mm256_set1_ps(3.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_max_ps(ep, ld1);
+      // 1/sqrt(in2) from a reciprocal square root approximation r and
+      // one newton-raphson stage, 0.5*r*(3-in2*r*r)
+      inv = _mm256_rsqrt_ps(ld1);      // r
+      ld1 = _mm256_mul_ps(ld1, inv);   // in2*r
+      ld1 = _mm256_mul_ps(ld1, inv);   // in2*r*r
+      ld1 = _mm256_sub_ps(three, ld1); // 3-in2*r*r
+      inv = _mm256_mul_ps(inv, half);  // 0.5*r
+      ld1 = _mm256_mul_ps(ld1, inv);   // 0.5*r*(3-in2*r*r)
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+      ld2 = _mm256_mul_ps(ld2, tmp);
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld3);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in2[i], msk1);
+      ld1 = _mm256_max_ps(ep, ld1);
+      inv = _mm256_rsqrt_ps(ld1);      // r
+      ld1 = _mm256_mul_ps(ld1, inv);   // in2*r
+      ld1 = _mm256_mul_ps(ld1, inv);   // in2*r*r
+      ld1 = _mm256_sub_ps(three, ld1); // 3-in2*r*r
+      inv = _mm256_mul_ps(inv, half);  // 0.5*r
+      ld1 = _mm256_mul_ps(ld1, inv);   // 0.5*r*(3-in2*r*r)
+      sc = _mm256_unpacklo_ps(ld1, ld1);  // [R0,R0,R1,R1,R4,R4,R5,R5]
+      ld1 = _mm256_unpackhi_ps(ld1, ld1); // [R2,R2,R3,R3,R6,R6,R7,R7]
+      tmp = _mm256_permute2f128_ps(sc, ld1, 0x20); // [R0,R0,...,R3,R3]
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk2);
+        ld1 = _mm256_permute2f128_ps(sc, ld1, 0x31); // [R4,R4,...,R7,R7]
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk2,
+            ld3);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk2);
+        ld2 = _mm256_mul_ps(ld2, tmp);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk2,
+            ld2);
+      }
+    }
+    return;
+  }
+  #endif // end AVX divnrSqrt
+  // default divnrSqrt
+  __attribute__((__target__("default")))
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]/sqrtf(std::max(in2[i], eps));
+    return;
+  }
+
+  // divnrSqrt with eps = 0, defined after every target version of divnrSqrt so
+  // that it calls the dispatcher
+  inline void divnrSqrt(complex<float> const * const in1,
+      float const * const in2, const int len, complex<float> * const out)
+  {
+    divnrSqrt(in1, in2, len, out, 0.0f);
   }
 
   //=====================================//
