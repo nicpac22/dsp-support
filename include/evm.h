@@ -206,6 +206,20 @@
 //    dotp = dot-product of two input buffers
 //    dotpc = conjugate dot-product of two input buffers, second input
 //        conjugated
+//    dotpRev = dot-product of two input buffers, second input reversed
+//    dotpcRev = conjugate dot-product of two input buffers, second input
+//        conjugated and reversed
+//    dotpn = dot-product of two complex input buffers, each product normalized
+//        by its magnitude prior to summing, using true sqrt div
+//    dotpnr = dot-product of two complex input buffers, each product normalized
+//        by its magnitude prior to summing, using a fast reciprocal square
+//        root approximation
+//    dotpcn = dot-product of two complex input buffers, second input
+//        conjugated, each product normalized by its magnitude prior to summing,
+//        using true sqrt div
+//    dotpcnr = dot-product of two complex input buffers, second input
+//        conjugated, each product normalized by its magnitude prior to summing,
+//        using a fast reciprocal square root approximation
 //
 //  Power/Magnitude:
 //    pow2 = squares each element of an input buffer
@@ -298,6 +312,7 @@
 #define EFFICIENT_VECTOR_MATH_H
 
 #define _USE_MATH_DEFINES // Must be defined BEFORE including cmath for M_PI
+#include <cfloat>    // for FLT_MIN
 #include <cmath>     // for M_PI
 #include <math.h>
 #include <cstdint>   // for int32_t
@@ -1001,6 +1016,7 @@ namespace EVM
   //    eps = a small value to compare with the divisor to avoid divide by zero
   inline void divg(float const * const in1, float const * const in2,
       const int len, const int stride, float * const out, const float eps);
+  
   // Point by point divide of two buffers with a fast reciprocal approximation,
   // using a gather operation (i.e. downsampling by stride elements).  Output
   // may be the same as one of the input buffers.
@@ -1021,6 +1037,7 @@ namespace EVM
   //    eps = a small value to compare with the divisor to avoid divide by zero
   inline void divrg(float const * const in1, float const * const in2,
       const int len, const int stride, float * const out, const float eps);
+  
   // Point by point divide of two buffers with a fast reciprocal approximation
   // and 1-stage Newton-Raphson refinement, using a gather operation (i.e.
   // downsampling by stride elements).  Output may be the same as one of the
@@ -1060,10 +1077,11 @@ namespace EVM
   inline void divSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out,
       const float eps);
-  // Same with eps = 0 (an overload rather than a default argument, which
-  // icpx does not apply to multiversioned functions)
+  // Overloaded function which sets eps=0.0 (icpx does not allow default
+  // values on multiversioned functions)
   inline void divSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out);
+  
   // Point by point division of a complex dividend by the square root of a
   // real divisor using a fast reciprocal square root approximation.  A small
   // epsilon is compared with the divisor prior to taking the square root to
@@ -1077,10 +1095,11 @@ namespace EVM
   inline void divrSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out,
       const float eps);
-  // Same with eps = 0 (an overload rather than a default argument, which
-  // icpx does not apply to multiversioned functions)
+  // Overloaded function which sets eps=0.0 (icpx does not allow default
+  // values on multiversioned functions)
   inline void divrSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out);
+  
   // Point by point division of a complex dividend by the square root of a
   // real divisor using a fast reciprocal square root approximation with
   // 1-stage Newton-Raphson refinement.  A small
@@ -1100,8 +1119,8 @@ namespace EVM
   inline void divnrSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out,
       const float eps);
-  // Same with eps = 0 (an overload rather than a default argument, which
-  // icpx does not apply to multiversioned functions)
+  // Overloaded function which sets eps=0.0 (icpx does not allow default
+  // values on multiversioned functions)
   inline void divnrSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out);
 
@@ -1143,6 +1162,90 @@ namespace EVM
   inline complex<float> dotpc(complex<float> const * const in1,
       complex<float> const * const in2, const int len);
   inline complex<float> dotpc(float const * const in1,
+      complex<float> const * const in2, const int len);
+
+  // Dot-product of two input buffers, second buffer reversed, if len <= 0,
+  // out will be set to 0
+  //    in1 = first input buffer for dot-product
+  //    in2 = second input buffer for dot-product, reversed
+  //    len = number of elements to compute dot-product over
+  //    out = dot-product of in1 and in2 reversed
+  inline void dotpRev(float const * const in1, float const * const in2,
+      const int len, float &out);
+  inline void dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  inline void dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrappers for dotpRev functions that return by value, these may be slightly
+  // slower than the reference versions due to the extra copy
+  inline float dotpRev(float const * const in1, float const * const in2,
+      const int len);
+  inline complex<float> dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  inline complex<float> dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Point by point complex-conjugate dot-product of two input buffers, second
+  // input conjugated and reversed, if len <= 0, out will be set to 0
+  //    in1 = first input buffer for dot-product
+  //    in2 = second input buffer for dot-product, conjugated and reversed
+  //    len = number of elements to compute dot-product over
+  //    out = dot-product of in1 and conj(in2) reversed
+  inline void dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  inline void dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrappers for dotpcRev functions that return by value, these may be slightly
+  // slower than the reference versions due to the extra copy
+  inline complex<float> dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  inline complex<float> dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Dot-product of two complex input buffers, each product normalized by its
+  // magnitude prior to summing, using true sqrt div
+  // A product whose squared magnitude is below FLT_MIN (a magnitude below
+  // about 1e-19), including 0, adds nothing.  If len <= 0, out will be set
+  // to 0.
+  inline void dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrapper that returns by value
+  inline complex<float> dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Dot-product of two complex input buffers, each product normalized by its
+  // magnitude prior to summing, using a fast reciprocal square root
+  // approximation
+  // A product whose squared magnitude is below FLT_MIN (a magnitude below
+  // about 1e-19), including 0, adds nothing.  If len <= 0, out will be set
+  // to 0.
+  inline void dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrapper that returns by value
+  inline complex<float> dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Dot-product of two complex input buffers, second input conjugated, each
+  // product normalized by its magnitude prior to summing, using true sqrt div
+  // A product whose squared magnitude is below FLT_MIN (a magnitude below
+  // about 1e-19), including 0, adds nothing.  If len <= 0, out will be set
+  // to 0.
+  inline void dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrapper that returns by value
+  inline complex<float> dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len);
+  
+  // Dot-product of two complex input buffers, second input conjugated, each
+  // product normalized by its magnitude prior to summing, using a fast
+  // reciprocal square root approximation
+  // A product whose squared magnitude is below FLT_MIN (a magnitude below
+  // about 1e-19), including 0, adds nothing.  If len <= 0, out will be set
+  // to 0.
+  inline void dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out);
+  // Wrapper that returns by value
+  inline complex<float> dotpcnr(complex<float> const * const in1,
       complex<float> const * const in2, const int len);
 
   //================//
@@ -16524,6 +16627,3143 @@ namespace EVM
   {
     complex<float> out;
     dotpc(in1, in2, len, out);
+    return out;
+  }
+
+  // real-real dot-product, second input reversed
+  #if !defined(DISABLE_AVX512) // AVX512 dotpRev
+  __attribute__((__target__("avx512f")))
+  inline void dotpRev(float const * const in1, float const * const in2,
+      const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    __m512 ld1, ld2;
+    __m512 sum = _mm512_set1_ps(0.0f);
+    // index reversing the order of the 16 floats in a register, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2
+    __m512i rev = _mm512_setr_epi32(15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0);
+    // the empty asm hides the index from the optimizer, otherwise icpx turns
+    // the vpermps into a vpermilps and a vshuff64x2, 2 shuffles per register
+    // instead of 1 (the asm emits no instructions)
+    __asm__("" : "+v"(rev));
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    float const * in2r = &in2[len];
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 63)
+    {
+      __m512 sum1 = sum;
+      __m512 sum2 = sum;
+      __m512 sum3 = sum;
+      for(; i<len-63; i+=64) // process 4 registers (64 real elements)
+      {
+        in2r -= 64;
+        ld1 = _mm512_loadu_ps(&in1[i]);
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(&in2r[48]));
+        sum = _mm512_fmadd_ps(ld1, ld2, sum);
+        ld1 = _mm512_loadu_ps(&in1[i+16]);
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(&in2r[32]));
+        sum1 = _mm512_fmadd_ps(ld1, ld2, sum1);
+        ld1 = _mm512_loadu_ps(&in1[i+32]);
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(&in2r[16]));
+        sum2 = _mm512_fmadd_ps(ld1, ld2, sum2);
+        ld1 = _mm512_loadu_ps(&in1[i+48]);
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(in2r));
+        sum3 = _mm512_fmadd_ps(ld1, ld2, sum3);
+      }
+      sum = _mm512_add_ps(sum, sum1);
+      sum2 = _mm512_add_ps(sum2, sum3);
+      sum = _mm512_add_ps(sum, sum2);
+    }
+    // 0-3 full registers remain and up to 1 partial register, compute these
+    // individually as using a loop will cause intel compiler to save/restore
+    // additional registers
+    // bit 5 indicates there are at least 32 elements that weren't taken care
+    // of by the loop above
+    if(len&32) // process 2 registers (32 real elements)
+    {
+      in2r -= 32;
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(&in2r[16]));
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      ld1 = _mm512_loadu_ps(&in1[i+16]);
+      ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(in2r));
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      i += 32;
+    }
+    // bit 4 indicates there were an additional 16 elements not taken care of
+    // by the loop above
+    if(len&16) // 1 register (16 real elements)
+    {
+      in2r -= 16;
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(in2r));
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+      i += 16;
+    }
+    // handle remaining elements in partial register (note len&15 == len%16),
+    // the last rem elements of in1 line up with the first rem elements of in2
+    // in reverse order
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      // in2 reversed, with the reversing index shifted down by 16-rem so that
+      // in2[rem-1] lands in lane 0 (the negative indices wrap around to the
+      // zeroed lanes)
+      ld2 = _mm512_permutexvar_ps(_mm512_sub_epi32(rev, _mm512_set1_epi32(
+          16-rem)), _mm512_maskz_loadu_ps(mk, in2));
+      sum = _mm512_fmadd_ps(ld1, ld2, sum);
+    }
+    out = _mm512_reduce_add_ps(sum);
+    return;
+  }
+  #endif // end AVX512 dotpRev
+  #if !defined(DISABLE_AVX2) // AVX2 dotpRev
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpRev(float const * const in1, float const * const in2,
+      const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    __m256 ld1, ld2;
+    __m256 sum = _mm256_set1_ps(0.0f);
+    // index reversing the order of the 8 floats in a register, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2
+    __m256i rev = _mm256_setr_epi32(7,6,5,4,3,2,1,0);
+    // the empty asm hides the index from the optimizer, otherwise icpx turns
+    // the vpermps into a vpermilps and a vpermpd, 2 shuffles per register
+    // instead of 1 (the asm emits no instructions)
+    __asm__("" : "+x"(rev));
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    float const * in2r = &in2[len];
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 31)
+    {
+      __m256 sum1 = sum;
+      __m256 sum2 = sum;
+      __m256 sum3 = sum;
+      for(; i<len-31; i+=32) // process 4 registers (32 real elements)
+      {
+        in2r -= 32;
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(&in2r[24]), rev);
+        sum = _mm256_fmadd_ps(ld1, ld2, sum);
+        ld1 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(&in2r[16]), rev);
+        sum1 = _mm256_fmadd_ps(ld1, ld2, sum1);
+        ld1 = _mm256_loadu_ps(&in1[i+16]);
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(&in2r[8]), rev);
+        sum2 = _mm256_fmadd_ps(ld1, ld2, sum2);
+        ld1 = _mm256_loadu_ps(&in1[i+24]);
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(in2r), rev);
+        sum3 = _mm256_fmadd_ps(ld1, ld2, sum3);
+      }
+      sum = _mm256_add_ps(sum, sum1);
+      sum2 = _mm256_add_ps(sum2, sum3);
+      sum = _mm256_add_ps(sum, sum2);
+    }
+    // 0-3 full registers remain and up to 1 partial register, compute these
+    // individually as using a loop will cause intel compiler to save/restore
+    // additional registers
+    // bit 4 indicates there are at least 16 elements that weren't taken care
+    // of by the loop above
+    if(len&16) // 2 registers (16 real elements)
+    {
+      in2r -= 16;
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(&in2r[8]), rev);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      ld1 = _mm256_loadu_ps(&in1[i+8]);
+      ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(in2r), rev);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      i += 16;
+    }
+    // bit 3 indicates there were an additional 8 elements not taken care of
+    // by the loop above
+    if(len&8) // 1 register (8 real elements)
+    {
+      in2r -= 8;
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(in2r), rev);
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+      i += 8;
+    }
+    // handle remaining elements in partial register (note len&7 == len%8),
+    // the last rem elements of in1 line up with the first rem elements of in2
+    // in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      // in2 reversed, with the reversing index shifted down by 8-rem so that
+      // in2[rem-1] lands in lane 0 (the negative indices wrap around to the
+      // zeroed lanes)
+      ld2 = _mm256_permutevar8x32_ps(_mm256_maskload_ps(in2, msk),
+          _mm256_sub_epi32(rev, _mm256_set1_epi32(8-rem)));
+      sum = _mm256_fmadd_ps(ld1, ld2, sum);
+    }
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
+  }
+  #endif // end AVX2 dotpRev
+  #if !defined(DISABLE_AVX) // AVX dotpRev
+  __attribute__((__target__("avx")))
+  inline void dotpRev(float const * const in1, float const * const in2,
+      const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    __m256 ld1, ld2, ld3;
+    __m256 sum = _mm256_set1_ps(0.0f);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    float const * in2r = &in2[len];
+    // note: in2 is read from the end so that element i of in1 lines up with
+    // element len-1-i of in2, so a register of in2 has to be reversed, which
+    // takes swapping its 128-bit halves and then reversing the 4 floats in
+    // each half
+    // 1 full register is done first if bit 3 of len is set (before the loop
+    // because icpx loads in2 with its halves swapped by a vperm2f128 whose
+    // unused first source can be any register, an accumulator after the loop,
+    // which makes it wait for the loop to finish)
+    if(len&8) // 1 register (8 real elements)
+    {
+      in2r -= 8;
+      ld1 = _mm256_loadu_ps(in1);
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+          &in2r[4])), _mm_loadu_ps(in2r), 1);
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0x1b); // in2 reversed
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+      i = 8;
+    }
+    // note: the other registers of in2 are not reversed one at a time, the
+    // halves of 2 registers of in1 are paired up by blends and those of in2
+    // read in the order that lines up with them: in1 [0-3|12-15] with in2
+    // [15-12|3-0] and in1 [8-11|4-7] with in2 [7-4|11-8] (counting from the
+    // start of the 16 elements of in2), which leaves no shuffle across the
+    // 128-bit halves with a single source
+    // note: with a single accumulator every mul/add waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    if(len > 31)
+    {
+      __m256 sum1 = _mm256_set1_ps(0.0f);
+      __m256 sum2 = sum1;
+      __m256 sum3 = sum1;
+      for(; i<len-31; i+=32) // process 4 registers (32 real elements)
+      {
+        in2r -= 32;
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld3 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_blend_ps(ld1, ld3, 0xf0); // in1 [0-3|12-15]
+        ld3 = _mm256_blend_ps(ld3, ld1, 0xf0); // in1 [8-11|4-7]
+        ld1 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+            &in2r[28])), _mm_loadu_ps(&in2r[16]), 1);
+        ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b); // in2 [15-12|3-0]
+        ld2 = _mm256_mul_ps(ld2, ld1);
+        sum = _mm256_add_ps(ld2, sum);
+        ld1 = _mm256_loadu_ps(&in2r[20]);
+        ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b); // in2 [7-4|11-8]
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        sum1 = _mm256_add_ps(ld3, sum1);
+        ld1 = _mm256_loadu_ps(&in1[i+16]);
+        ld3 = _mm256_loadu_ps(&in1[i+24]);
+        ld2 = _mm256_blend_ps(ld1, ld3, 0xf0);
+        ld3 = _mm256_blend_ps(ld3, ld1, 0xf0);
+        ld1 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+            &in2r[12])), _mm_loadu_ps(in2r), 1);
+        ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b);
+        ld2 = _mm256_mul_ps(ld2, ld1);
+        sum2 = _mm256_add_ps(ld2, sum2);
+        ld1 = _mm256_loadu_ps(&in2r[4]);
+        ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b);
+        ld3 = _mm256_mul_ps(ld3, ld1);
+        sum3 = _mm256_add_ps(ld3, sum3);
+      }
+      sum = _mm256_add_ps(sum, sum1);
+      sum2 = _mm256_add_ps(sum2, sum3);
+      sum = _mm256_add_ps(sum, sum2);
+    }
+    // 0-1 pairs of full registers remain and up to 1 partial register,
+    // compute these individually as using a loop will cause intel compiler to
+    // save/restore additional registers
+    // bit 4 indicates there are at least 16 elements that weren't taken care
+    // of by the loop above
+    if(len&16) // 2 registers (16 real elements)
+    {
+      in2r -= 16;
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld3 = _mm256_loadu_ps(&in1[i+8]);
+      ld2 = _mm256_blend_ps(ld1, ld3, 0xf0); // in1 [0-3|12-15]
+      ld3 = _mm256_blend_ps(ld3, ld1, 0xf0); // in1 [8-11|4-7]
+      ld1 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+          &in2r[12])), _mm_loadu_ps(in2r), 1);
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b); // in2 [15-12|3-0]
+      ld2 = _mm256_mul_ps(ld2, ld1);
+      sum = _mm256_add_ps(ld2, sum);
+      ld1 = _mm256_loadu_ps(&in2r[4]);
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0x1b); // in2 [7-4|11-8]
+      ld3 = _mm256_mul_ps(ld3, ld1);
+      sum = _mm256_add_ps(ld3, sum);
+      i += 16;
+    }
+    // handle remaining elements in partial register (note len&7 == len%8),
+    // the last rem elements of in1 line up with the first rem elements of in2
+    // in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      // in2 reversed, [in2[rem-1], ..., in2[0], 0, ...]: the first c floats
+      // of in2 (all of them, or the 1-3 before the last 4) are loaded masked
+      // and reversed with an index shifted down by 4-c so that in2[c-1] lands
+      // in lane 0 (the negative indices wrap around to the zeroed lanes), AVX
+      // has no variable permute across the 128-bit halves
+      const int c = (rem>4) ? rem-4 : rem;
+      __m128 lo = _mm_permutevar_ps(_mm_maskload_ps(in2, _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[c]))), _mm_sub_epi32(
+          _mm_setr_epi32(3,2,1,0), _mm_set1_epi32(4-c)));
+      __m128 hi = _mm_setzero_ps();
+      if(rem>4)
+      {
+        hi = lo;
+        lo = _mm_permute_ps(_mm_loadu_ps(&in2[rem-4]), 0x1b); // in2[rem-1] ..
+      }
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(lo), hi, 1);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      sum = _mm256_add_ps(ld1, sum);
+    }
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
+  }
+  #endif // end AVX dotpRev
+  // default dotpRev
+  __attribute__((__target__("default")))
+  inline void dotpRev(float const * const in1, float const * const in2,
+      const int len, float &out)
+  {
+    // use a separate sum so the compiler knows that it won't alias with the
+    // inputs (when summing directly into out the compiler can not assume this
+    // and it costs load/store cycles)
+    float sum = 0.0f;
+    int idx = len-1;
+    for(int i=0; i<len; ++i) sum += (in1[i]*in2[idx--]);
+    out = sum;
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline float dotpRev(float const * const in1, float const * const in2,
+      const int len)
+  {
+    float out;
+    dotpRev(in1, in2, len, out);
+    return out;
+  }
+
+  // complex-complex dot-product, second input reversed
+  #if !defined(DISABLE_AVX512) // AVX512 dotpRev
+  __attribute__((__target__("avx512f")))
+  inline void dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, sh;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    // index reversing the order of the 8 complex elements in a register, in2
+    // is read from the end so that element i of in1 lines up with element
+    // len-1-i of in2
+    const __m512i rev = _mm512_setr_epi32(14,15,12,13,10,11,8,9,6,7,4,5,2,3,
+        0,1);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA unit busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 15)
+    {
+      __m512 sumr2 = sumr;
+      __m512 sumi2 = sumr;
+      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+      {
+        in2r -= 16;
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[8]))); // B reversed
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+            reinterpret_cast<float const *>(in2r)));
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm512_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm512_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm512_add_ps(sumr, sumr2);
+      sumi = _mm512_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 3 of len is set
+    if(len&8) // process 1 register (8 complex elements)
+    {
+      in2r -= 8;
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+          reinterpret_cast<float const *>(in2r))); // B reversed
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 8;
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = mask16(rem<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in1[i])); // A
+      // B reversed, with the reversing index shifted down by 8-rem complex
+      // elements so that in2[rem-1] lands in lane 0 (the negative indices wrap
+      // around to the zeroed lanes)
+      ld2 = _mm512_permutexvar_ps(_mm512_sub_epi32(rev, _mm512_set1_epi32(
+          (8-rem)<<1)), _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(in2)));
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in every 128-bit lane
+    ld1 = _mm512_unpacklo_ps(sumr, sumi);// [r0, i0, r1, i1,.,. | r8, i8, ...]
+    ld2 = _mm512_unpackhi_ps(sumr, sumi);// [r2, i2, r3, i3,... | r10, i10, ...]
+    ld1 = _mm512_add_ps(ld1, ld2);  // [r0+r2, i0+i2, ... | r8+r10, i8+i10, ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs1 = _mm_addsub_ps(hs1, _mm_permute_ps(hs1, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpRev
+  #if !defined(DISABLE_AVX2) // AVX2 dotpRev
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // index reversing the order of the 4 complex elements in a register, in2
+    // is read from the end so that element i of in1 lines up with element
+    // len-1-i of in2
+    const __m256i rev = _mm256_setr_epi32(6,7,4,5,2,3,0,1);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA units busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = sumr;
+      __m256 sumi2 = sumr;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        in2r -= 8;
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[4])), rev); // B reversed
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+            reinterpret_cast<float const *>(in2r)), rev);
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm256_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm256_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 2 of len is set
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      in2r -= 4;
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+          reinterpret_cast<float const *>(in2r)), rev); // B reversed
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 4;
+    }
+    // handle remaining elements (note len&3 == len%4), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      // B reversed, with the reversing index shifted down by 4-rem complex
+      // elements so that in2[rem-1] lands in lane 0 (the negative indices wrap
+      // around to the zeroed lanes)
+      ld2 = _mm256_permutevar8x32_ps(_mm256_maskload_ps(
+          reinterpret_cast<float const *>(in2), msk), _mm256_sub_epi32(rev,
+          _mm256_set1_epi32((4-rem)<<1)));
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs = _mm_addsub_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpRev
+  #if !defined(DISABLE_AVX) // AVX dotpRev
+  __attribute__((__target__("avx")))
+  inline void dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: in2 is read from the end so that element i of in1 lines up with
+    // element len-1-i of in2, so a register of in2 has to be reversed, which
+    // takes swapping its 128-bit halves and then the 2 complex elements in
+    // each half
+    // up to 1 full register is done first if bit 2 of len is set (before the
+    // loop because icpx loads in2 with its halves swapped by a vperm2f128
+    // whose unused first source can be any register, an accumulator after
+    // the loop, which makes it wait for the loop to finish)
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      in2r -= 4;
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(in1)); // A
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+          reinterpret_cast<float const *>(&in2r[2]))), _mm_loadu_ps(
+          reinterpret_cast<float const *>(in2r)), 1);
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // B reversed
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+      i = 4;
+    }
+    // note: with a single pair of accumulators every mul/add waits on the
+    // previous one, so longer buffers use 2 pairs to keep the pipeline full,
+    // combining them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = _mm256_set1_ps(0.0f);
+      __m256 sumi2 = sumr2;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        in2r -= 8;
+        // instead of reversing each register, the halves of the 2 registers
+        // of in1 are paired up by blends and those of in2 read in the order
+        // that lines up with them: in1 [0,1|6,7] with in2 [7,6|1,0] and in1
+        // [4,5|2,3] with in2 [3,2|5,4] (counting from in2r), which leaves no
+        // shuffle across the 128-bit halves with a single source
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        sh = _mm256_blend_ps(ld1, ld3, 0xf0);  // in1 [0,1|6,7]
+        ld3 = _mm256_blend_ps(ld3, ld1, 0xf0); // in1 [4,5|2,3]
+        ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[6]))), _mm_loadu_ps(
+            reinterpret_cast<float const *>(in2r)), 1);
+        ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // in2 [7,6|1,0]
+        ld1 = _mm256_shuffle_ps(sh, sh, 0xb1);
+        // accumulate the real and imaginary parts of the dot-product separately
+        sh = _mm256_mul_ps(sh, ld2);    // [ArBr, AiBi]
+        ld2 = _mm256_mul_ps(ld1, ld2);  // [AiBr, ArBi]
+        sumr = _mm256_add_ps(sumr, sh);
+        sumi = _mm256_add_ps(sumi, ld2);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[2]));
+        ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // in2 [3,2|5,4]
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1);
+        ld3 = _mm256_mul_ps(ld3, ld2);
+        ld2 = _mm256_mul_ps(sh, ld2);
+        sumr2 = _mm256_add_ps(sumr2, ld3);
+        sumi2 = _mm256_add_ps(sumi2, ld2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // handle remaining elements (note len&3 == len%4), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      // B reversed, [B2,B1,B0,0] for rem = 3, [B1,B0,0,0] for 2 and
+      // [B0,0,0,0] for 1, built from 64 and 128-bit loads (AVX has no
+      // variable permute across the 128-bit halves)
+      __m128 lo = _mm_castpd_ps(_mm_load_sd(reinterpret_cast<double const *>(
+          in2))); // [B0, 0]
+      __m128 hi = _mm_setzero_ps();
+      if(rem>1)
+      {
+        if(rem>2) hi = lo;
+        lo = _mm_loadu_ps(reinterpret_cast<float const *>(&in2[rem-2]));
+        lo = _mm_permute_ps(lo, 0x4e); // [B[rem-1], B[rem-2]]
+      }
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(lo), hi, 1);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // [ArBr-AiBi, AiBr+ArBi, ...], real and imaginary parts of the result
+    hs = _mm_addsub_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpRev
+  // default dotpRev
+  __attribute__((__target__("default")))
+  inline void dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    int idx = len-1;
+    for(int i=0; i<len; ++i)
+    {
+      reSum += (in1[i].real()*in2[idx].real()-in1[i].imag()*in2[idx].imag());
+      imSum += (in1[i].imag()*in2[idx].real()+in1[i].real()*in2[idx].imag());
+      --idx;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpRev(in1, in2, len, out);
+    return out;
+  }
+
+  // real-complex dot-product, second input reversed
+  #if !defined(DISABLE_AVX512) // AVX512 dotpRev
+  __attribute__((__target__("avx512f")))
+  inline void dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, sc;
+    __m512 sum1 = _mm512_set1_ps(0.0f);
+    __m512 sum2 = sum1;
+    // constants for duplicating real elements in reverse order, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2 (complex element j of a 16 element block with real element 15-j)
+    const __m512i p1 = _mm512_setr_epi32(15,15,14,14,13,13,12,12,11,11,10,10,
+        9,9,8,8);
+    const __m512i p2 = _mm512_setr_epi32(7,7,6,6,5,5,4,4,3,3,2,2,1,1,0,0);
+    // registers for horizontal reduction
+    __m256 hs2;
+    __m128 hs1;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with 2 accumulators every FMA waits on the previous one, so longer
+    // buffers use 4 to keep the FMA unit busy
+    if(len > 31)
+    {
+      __m512 sum3 = sum1;
+      __m512 sum4 = sum1;
+      for(; i<len-31; i+=32) // process 2 registers (32 real elements)
+      {
+        in2r -= 32;
+        ld1 = _mm512_loadu_ps(&in1[i]);
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[16]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[24]));
+        sc = _mm512_permutexvar_ps(p1, ld1);
+        ld1 = _mm512_permutexvar_ps(p2, ld1);
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+        ld1 = _mm512_loadu_ps(&in1[i+16]);
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2r));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+        sc = _mm512_permutexvar_ps(p1, ld1);
+        ld1 = _mm512_permutexvar_ps(p2, ld1);
+        sum3 = _mm512_fmadd_ps(ld2, sc, sum3);
+        sum4 = _mm512_fmadd_ps(ld3, ld1, sum4);
+      }
+      sum1 = _mm512_add_ps(sum1, sum3);
+      sum2 = _mm512_add_ps(sum2, sum4);
+    }
+    // at least 1 full register of reals (2 of complex) remain if bit 4 of len
+    // is set
+    if(len&16) // process 1 real/2 complex registers (16 real elements)
+    {
+      in2r -= 16;
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+      sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+      i += 16;
+    }
+    // handle remaining elements (note len&15 == len%16), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&15;
+    if(rem)
+    {
+      // shift the duplicating indices down by 16-rem so that real rem-1 lines
+      // up with in2[0] (the negative indices wrap around to the zeroed lanes)
+      const __m512i sh = _mm512_set1_epi32(16-rem);
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
+      sc = _mm512_permutexvar_ps(_mm512_sub_epi32(p1, sh), ld1);
+      if(rem>8) // if remainder is > 8, need 2 registers worth
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[8]));
+        ld1 = _mm512_permutexvar_ps(_mm512_sub_epi32(p2, sh), ld1);
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(in2));
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm512_add_ps(sum1, sum2);
+    // add the upper half of sum1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(sum1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(sum1), hs2);
+    // add the upper half of hs2 to the lower half
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1);
+    // add the upper 2 FP to the lower 2 in hs1
+    hs1 = _mm_add_ps(hs1, _mm_permute_ps(hs1, 0x4e));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpRev
+  #if !defined(DISABLE_AVX2) // AVX2 dotpRev
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, sc;
+    __m256 sum1 = _mm256_set1_ps(0.0f);
+    __m256 sum2 = sum1;
+    // constants for duplicating real elements in reverse order, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2 (complex element j of an 8 element block with real element 7-j)
+    const __m256i p1 = _mm256_setr_epi32(7,7,6,6,5,5,4,4);
+    const __m256i p2 = _mm256_setr_epi32(3,3,2,2,1,1,0,0);
+    // register for horizontal reduction
+    __m128 hs;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with 2 accumulators every FMA waits on the previous one, so longer
+    // buffers use 4 to keep the FMA units busy
+    if(len > 15)
+    {
+      __m256 sum3 = sum1;
+      __m256 sum4 = sum1;
+      for(; i<len-15; i+=16) // process 2 registers (16 real elements)
+      {
+        in2r -= 16;
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[12]));
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+        ld1 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        sum3 = _mm256_fmadd_ps(ld2, sc, sum3);
+        sum4 = _mm256_fmadd_ps(ld3, ld1, sum4);
+      }
+      sum1 = _mm256_add_ps(sum1, sum3);
+      sum2 = _mm256_add_ps(sum2, sum4);
+    }
+    // at least 1 full register of reals (2 of complex) remain if bit 3 of len
+    // is set
+    if(len&8) // process 1 real/2 complex registers (8 real elements)
+    {
+      in2r -= 8;
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+      sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+      i += 8;
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // shift the duplicating indices down by 8-rem so that real rem-1 lines
+      // up with in2[0] (the negative indices wrap around to the zeroed lanes)
+      const __m256i sh = _mm256_set1_epi32(8-rem);
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      sc = _mm256_permutevar8x32_ps(ld1, _mm256_sub_epi32(p1, sh));
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[4]),
+            msk2);
+        ld1 = _mm256_permutevar8x32_ps(ld1, _mm256_sub_epi32(p2, sh));
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(in2), msk2);
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm256_add_ps(sum1, sum2);
+    // add the upper half and lower half of sum1 and combine into hs
+    hs = _mm256_extractf128_ps(sum1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum1), hs); // add to lower half
+    // add the upper 2 FP to the lower 2 in hs
+    hs = _mm_add_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpRev
+  #if !defined(DISABLE_AVX) // AVX dotpRev
+  __attribute__((__target__("avx")))
+  inline void dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld2, ld3, sc1, sc2;
+    __m256 sum1 = _mm256_set1_ps(0.0f);
+    __m256 sum2 = sum1;
+    // in-lane index for duplicating real elements in reverse order, used on 4
+    // reals broadcast to both 128-bit lanes: [3,3,2,2] in the lower lane,
+    // [1,1,0,0] in the upper (in2 is read from the end so that element i of
+    // in1 lines up with element len-1-i of in2)
+    const __m256i p1 = _mm256_setr_epi32(3,3,2,2,1,1,0,0);
+    // register for horizontal reduction
+    __m128 hs;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      in2r -= 8;
+      // the broadcasts are plain loads, which leaves 2 shuffles per register
+      // instead of 4
+      sc1 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in1[i+4])), p1);// [7,7,6,6,5,5,4,4]
+      sc2 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in1[i])), p1);  // [3,3,2,2,1,1,0,0]
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+      ld2 = _mm256_mul_ps(ld2, sc1);
+      ld3 = _mm256_mul_ps(ld3, sc2);
+      sum1 = _mm256_add_ps(ld2, sum1);
+      sum2 = _mm256_add_ps(ld3, sum2);
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // the first c reals of the remainder (all of them, or the 1-3 past the
+      // last 4) are loaded masked and broadcast, and the duplicating index
+      // shifted down by 4-c so that real c-1 lands in lane 0 (the negative
+      // indices wrap around to the zeroed lanes)
+      const int c = (rem>4) ? rem-4 : rem;
+      const __m128i sh = _mm_set1_epi32(4-c);
+      const __m128 ld1 = _mm_maskload_ps(&in1[i], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[c])));
+      sc2 = _mm256_permutevar_ps(_mm256_insertf128_ps(
+          _mm256_castps128_ps256(ld1), ld1, 1), _mm256_insertf128_si256(
+          _mm256_castsi128_si256(_mm_sub_epi32(_mm_setr_epi32(3,3,2,2), sh)),
+          _mm_sub_epi32(_mm_setr_epi32(1,1,0,0), sh), 1));
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        // the last 4 reals line up with in2[0] to in2[3]
+        sc1 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in1[i+rem-4])), p1);
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[4]),
+            msk2);
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        ld3 = _mm256_mul_ps(ld3, sc2);
+        sum1 = _mm256_add_ps(ld2, sum1);
+        sum2 = _mm256_add_ps(ld3, sum2);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(in2), msk2);
+        ld2 = _mm256_mul_ps(ld2, sc2);
+        sum1 = _mm256_add_ps(ld2, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm256_add_ps(sum1, sum2);
+    // add the upper half and lower half of sum1 and combine into hs
+    hs = _mm256_extractf128_ps(sum1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum1), hs); // add to lower half
+    // add the upper 2 FP to the lower 2 in hs
+    hs = _mm_add_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpRev
+  // default dotpRev
+  __attribute__((__target__("default")))
+  inline void dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    int idx = len-1;
+    for(int i=0; i<len; ++i)
+    {
+      reSum += in1[i]*in2[idx].real();
+      imSum += in1[i]*in2[idx--].imag();
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpRev(float const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpRev(in1, in2, len, out);
+    return out;
+  }
+
+  // complex-complex conjugate dot-product with second input reversed
+  #if !defined(DISABLE_AVX512) // AVX512 complex-complex dotpcRev
+  __attribute__((__target__("avx512f")))
+  inline void dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, sh;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    // index reversing the order of the 8 complex elements in a register, in2
+    // is read from the end so that element i of in1 lines up with element
+    // len-1-i of in2
+    const __m512i rev = _mm512_setr_epi32(14,15,12,13,10,11,8,9,6,7,4,5,2,3,
+        0,1);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA unit busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 15)
+    {
+      __m512 sumr2 = sumr;
+      __m512 sumi2 = sumr;
+      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+      {
+        in2r -= 16;
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[8]))); // B reversed
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+        ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+            reinterpret_cast<float const *>(in2r)));
+        sh = _mm512_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm512_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm512_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm512_add_ps(sumr, sumr2);
+      sumi = _mm512_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 3 of len is set
+    if(len&8) // process 1 register (8 complex elements)
+    {
+      in2r -= 8;
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm512_permutexvar_ps(rev, _mm512_loadu_ps(
+          reinterpret_cast<float const *>(in2r))); // B reversed
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 8;
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = mask16(rem<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in1[i])); // A
+      // B reversed, with the reversing index shifted down by 8-rem complex
+      // elements so that in2[rem-1] lands in lane 0 (the negative indices wrap
+      // around to the zeroed lanes)
+      ld2 = _mm512_permutexvar_ps(_mm512_sub_epi32(rev, _mm512_set1_epi32(
+          (8-rem)<<1)), _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(in2)));
+      sh = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai7,Ar7]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm512_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm512_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in every 128-bit lane
+    ld1 = _mm512_unpacklo_ps(sumr, sumi);// [r0, i0, r1, i1,.,. | r8, i8, ...]
+    ld2 = _mm512_unpackhi_ps(sumr, sumi);// [r2, i2, r3, i3,... | r10, i10, ...]
+    ld1 = _mm512_add_ps(ld1, ld2);  // [r0+r2, i0+i2, ... | r8+r10, i8+i10, ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [ArBr,AiBr,AiBi,ArBi]
+    // swap upper and lower halves of hs1 and negate the ArBi term for conjugate
+    // [ArBr+AiBi, AiBr-ArBi, ...], real and imaginary parts of the result
+    hs1 = _mm_add_ps(hs1, _mm_xor_ps(_mm_permute_ps(hs1, 0x4e),
+        _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f)));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 complex-complex dotpcRev
+  #if !defined(DISABLE_AVX2) // AVX2 complex-complex dotpcRev
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // index reversing the order of the 4 complex elements in a register, in2
+    // is read from the end so that element i of in1 lines up with element
+    // len-1-i of in2
+    const __m256i rev = _mm256_setr_epi32(6,7,4,5,2,3,0,1);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with a single pair of accumulators every FMA waits on the previous
+    // one, so longer buffers use 2 pairs to keep the FMA units busy, combining
+    // them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = sumr;
+      __m256 sumi2 = sumr;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        in2r -= 8;
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[4])), rev); // B reversed
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+        // accumulate the real and imaginary parts of the dot-product separately
+        sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+        sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+            reinterpret_cast<float const *>(in2r)), rev);
+        sh = _mm256_shuffle_ps(ld1, ld1, 0xb1);
+        sumr2 = _mm256_fmadd_ps(ld1, ld2, sumr2);
+        sumi2 = _mm256_fmadd_ps(sh, ld2, sumi2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // up to 1 full register remains if bit 2 of len is set
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      in2r -= 4;
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(
+          reinterpret_cast<float const *>(in2r)), rev); // B reversed
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+      i += 4;
+    }
+    // handle remaining elements (note len&3 == len%4), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      // B reversed, with the reversing index shifted down by 4-rem complex
+      // elements so that in2[rem-1] lands in lane 0 (the negative indices wrap
+      // around to the zeroed lanes)
+      ld2 = _mm256_permutevar8x32_ps(_mm256_maskload_ps(
+          reinterpret_cast<float const *>(in2), msk), _mm256_sub_epi32(rev,
+          _mm256_set1_epi32((4-rem)<<1)));
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      sumr = _mm256_fmadd_ps(ld1, ld2, sumr); // [ArBr, AiBi]
+      sumi = _mm256_fmadd_ps(sh, ld2, sumi);  // [AiBr, ArBi]
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // swap upper and lower halves of hs and negate the ArBi term for conjugate
+    // [ArBr+AiBi, AiBr-ArBi, ...], real and imaginary parts of the result
+    hs = _mm_add_ps(hs, _mm_xor_ps(_mm_permute_ps(hs, 0x4e),
+        _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f)));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 complex-complex dotpcRev
+  #if !defined(DISABLE_AVX) // AVX complex-complex dotpcRev
+  __attribute__((__target__("avx")))
+  inline void dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, sh;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: in2 is read from the end so that element i of in1 lines up with
+    // element len-1-i of in2, so a register of in2 has to be reversed, which
+    // takes swapping its 128-bit halves and then the 2 complex elements in
+    // each half
+    // up to 1 full register is done first if bit 2 of len is set (before the
+    // loop because icpx loads in2 with its halves swapped by a vperm2f128
+    // whose unused first source can be any register, an accumulator after
+    // the loop, which makes it wait for the loop to finish)
+    if(len&4) // process 1 register (4 complex elements)
+    {
+      in2r -= 4;
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(in1)); // A
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+          reinterpret_cast<float const *>(&in2r[2]))), _mm_loadu_ps(
+          reinterpret_cast<float const *>(in2r)), 1);
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // B reversed
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+      i = 4;
+    }
+    // note: with a single pair of accumulators every mul/add waits on the
+    // previous one, so longer buffers use 2 pairs to keep the pipeline full,
+    // combining them only if the 2 register loop runs (short buffers skip it)
+    if(len > 7)
+    {
+      __m256 sumr2 = _mm256_set1_ps(0.0f);
+      __m256 sumi2 = sumr2;
+      for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+      {
+        in2r -= 8;
+        // instead of reversing each register, the halves of the 2 registers
+        // of in1 are paired up by blends and those of in2 read in the order
+        // that lines up with them: in1 [0,1|6,7] with in2 [7,6|1,0] and in1
+        // [4,5|2,3] with in2 [3,2|5,4] (counting from in2r), which leaves no
+        // shuffle across the 128-bit halves with a single source
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+        sh = _mm256_blend_ps(ld1, ld3, 0xf0);  // in1 [0,1|6,7]
+        ld3 = _mm256_blend_ps(ld3, ld1, 0xf0); // in1 [4,5|2,3]
+        ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(
+            reinterpret_cast<float const *>(&in2r[6]))), _mm_loadu_ps(
+            reinterpret_cast<float const *>(in2r)), 1);
+        ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // in2 [7,6|1,0]
+        ld1 = _mm256_shuffle_ps(sh, sh, 0xb1);
+        // accumulate the real and imaginary parts of the dot-product separately
+        sh = _mm256_mul_ps(sh, ld2);    // [ArBr, AiBi]
+        ld2 = _mm256_mul_ps(ld1, ld2);  // [AiBr, ArBi]
+        sumr = _mm256_add_ps(sumr, sh);
+        sumi = _mm256_add_ps(sumi, ld2);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[2]));
+        ld2 = _mm256_shuffle_ps(ld2, ld2, 0x4e); // in2 [3,2|5,4]
+        sh = _mm256_shuffle_ps(ld3, ld3, 0xb1);
+        ld3 = _mm256_mul_ps(ld3, ld2);
+        ld2 = _mm256_mul_ps(sh, ld2);
+        sumr2 = _mm256_add_ps(sumr2, ld3);
+        sumi2 = _mm256_add_ps(sumi2, ld2);
+      }
+      sumr = _mm256_add_ps(sumr, sumr2);
+      sumi = _mm256_add_ps(sumi, sumi2);
+    }
+    // handle remaining elements (note len&3 == len%4), the last rem elements
+    // of in1 line up with the first rem elements of in2 in reverse order
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), msk);
+      // B reversed, [B2,B1,B0,0] for rem = 3, [B1,B0,0,0] for 2 and
+      // [B0,0,0,0] for 1, built from 64 and 128-bit loads (AVX has no
+      // variable permute across the 128-bit halves)
+      __m128 lo = _mm_castpd_ps(_mm_load_sd(reinterpret_cast<double const *>(
+          in2))); // [B0, 0]
+      __m128 hi = _mm_setzero_ps();
+      if(rem>1)
+      {
+        if(rem>2) hi = lo;
+        lo = _mm_loadu_ps(reinterpret_cast<float const *>(&in2[rem-2]));
+        lo = _mm_permute_ps(lo, 0x4e); // [B[rem-1], B[rem-2]]
+      }
+      ld2 = _mm256_insertf128_ps(_mm256_castps128_ps256(lo), hi, 1);
+      sh = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...,Ai3,Ar3]
+      // accumulate the real and imaginary parts of the dot-product separately
+      ld1 = _mm256_mul_ps(ld1, ld2);  // [ArBr, AiBi]
+      ld2 = _mm256_mul_ps(sh, ld2);   // [AiBr, ArBi]
+      sumr = _mm256_add_ps(sumr, ld1);
+      sumi = _mm256_add_ps(sumi, ld2);
+    }
+    // horizontal reduction, interleaving the accumulators lines the 4 product
+    // sums up as [ArBr, AiBr, AiBi, ArBi] in each 128-bit lane
+    ld1 = _mm256_unpacklo_ps(sumr, sumi); // [r0, i0, r1, i1, r4, i4, r5, i5]
+    ld2 = _mm256_unpackhi_ps(sumr, sumi); // [r2, i2, r3, i3, r6, i6, r7, i7]
+    ld1 = _mm256_add_ps(ld1, ld2);  // [r0+r2, i0+i2, r1+r3, i1+i3, ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [ArBr,AiBr,AiBi,ArBi]
+    // swap upper and lower halves of hs and negate the ArBi term for conjugate
+    // [ArBr+AiBi, AiBr-ArBi, ...], real and imaginary parts of the result
+    hs = _mm_add_ps(hs, _mm_xor_ps(_mm_permute_ps(hs, 0x4e),
+        _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f)));
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX complex-complex dotpcRev
+  // default complex-complex dotpcRev
+  __attribute__((__target__("default")))
+  inline void dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    int idx = len-1;
+    for(int i=0; i<len; ++i)
+    {
+      reSum += (in1[i].real()*in2[idx].real()+in1[i].imag()*in2[idx].imag());
+      imSum += (in1[i].imag()*in2[idx].real()-in1[i].real()*in2[idx].imag());
+      --idx;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpcRev(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpcRev(in1, in2, len, out);
+    return out;
+  }
+  
+  // real-complex conjugate dot-product with second input reversed
+  #if !defined(DISABLE_AVX512) // AVX512 real-complex dotpcRev
+  __attribute__((__target__("avx512f")))
+  inline void dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, sc;
+    __m512 sum1 = _mm512_set1_ps(0.0f);
+    __m512 sum2 = sum1;
+    // constants for duplicating real elements in reverse order, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2 (complex element j of a 16 element block with real element 15-j)
+    const __m512i p1 = _mm512_setr_epi32(15,15,14,14,13,13,12,12,11,11,10,10,
+        9,9,8,8);
+    const __m512i p2 = _mm512_setr_epi32(7,7,6,6,5,5,4,4,3,3,2,2,1,1,0,0);
+    // registers for horizontal reduction
+    __m256 hs2;
+    __m128 hs1;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with 2 accumulators every FMA waits on the previous one, so longer
+    // buffers use 4 to keep the FMA unit busy
+    if(len > 31)
+    {
+      __m512 sum3 = sum1;
+      __m512 sum4 = sum1;
+      for(; i<len-31; i+=32) // process 2 registers (32 real elements)
+      {
+        in2r -= 32;
+        ld1 = _mm512_loadu_ps(&in1[i]);
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[16]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[24]));
+        sc = _mm512_permutexvar_ps(p1, ld1);
+        ld1 = _mm512_permutexvar_ps(p2, ld1);
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+        ld1 = _mm512_loadu_ps(&in1[i+16]);
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2r));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+        sc = _mm512_permutexvar_ps(p1, ld1);
+        ld1 = _mm512_permutexvar_ps(p2, ld1);
+        sum3 = _mm512_fmadd_ps(ld2, sc, sum3);
+        sum4 = _mm512_fmadd_ps(ld3, ld1, sum4);
+      }
+      sum1 = _mm512_add_ps(sum1, sum3);
+      sum2 = _mm512_add_ps(sum2, sum4);
+    }
+    // at least 1 full register of reals (2 of complex) remain if bit 4 of len
+    // is set
+    if(len&16) // process 1 real/2 complex registers (16 real elements)
+    {
+      in2r -= 16;
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+      sc = _mm512_permutexvar_ps(p1, ld1);
+      ld1 = _mm512_permutexvar_ps(p2, ld1);
+      sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+      sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+      i += 16;
+    }
+    // handle remaining elements (note len&15 == len%16), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&15;
+    if(rem)
+    {
+      // shift the duplicating indices down by 16-rem so that real rem-1 lines
+      // up with in2[0] (the negative indices wrap around to the zeroed lanes)
+      const __m512i sh = _mm512_set1_epi32(16-rem);
+      ld1 = _mm512_maskz_loadu_ps(mask16(rem), &in1[i]);
+      sc = _mm512_permutexvar_ps(_mm512_sub_epi32(p1, sh), ld1);
+      if(rem>8) // if remainder is > 8, need 2 registers worth
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[8]));
+        ld1 = _mm512_permutexvar_ps(_mm512_sub_epi32(p2, sh), ld1);
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm512_fmadd_ps(ld3, ld1, sum2);
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(in2));
+        sum1 = _mm512_fmadd_ps(ld2, sc, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm512_add_ps(sum1, sum2);
+    // add the upper half of sum1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(sum1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(sum1), hs2);
+    // add the upper half of hs2 to the lower half
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1);
+    // add the upper 2 FP to the lower 2 in hs1
+    hs1 = _mm_add_ps(hs1, _mm_permute_ps(hs1, 0x4e));
+    // flip the sign on the imaginary part for conjugate
+    hs1 = _mm_xor_ps(hs1, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 real-complex dotpcRev
+  #if !defined(DISABLE_AVX2) // AVX2 real-complex dotpcRev
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, sc;
+    __m256 sum1 = _mm256_set1_ps(0.0f);
+    __m256 sum2 = sum1;
+    // constants for duplicating real elements in reverse order, in2 is read
+    // from the end so that element i of in1 lines up with element len-1-i of
+    // in2 (complex element j of an 8 element block with real element 7-j)
+    const __m256i p1 = _mm256_setr_epi32(7,7,6,6,5,5,4,4);
+    const __m256i p2 = _mm256_setr_epi32(3,3,2,2,1,1,0,0);
+    // register for horizontal reduction
+    __m128 hs;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    // note: with 2 accumulators every FMA waits on the previous one, so longer
+    // buffers use 4 to keep the FMA units busy
+    if(len > 15)
+    {
+      __m256 sum3 = sum1;
+      __m256 sum4 = sum1;
+      for(; i<len-15; i+=16) // process 2 registers (16 real elements)
+      {
+        in2r -= 16;
+        ld1 = _mm256_loadu_ps(&in1[i]);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[8]));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[12]));
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+        ld1 = _mm256_loadu_ps(&in1[i+8]);
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+        sc = _mm256_permutevar8x32_ps(ld1, p1);
+        ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+        sum3 = _mm256_fmadd_ps(ld2, sc, sum3);
+        sum4 = _mm256_fmadd_ps(ld3, ld1, sum4);
+      }
+      sum1 = _mm256_add_ps(sum1, sum3);
+      sum2 = _mm256_add_ps(sum2, sum4);
+    }
+    // at least 1 full register of reals (2 of complex) remain if bit 3 of len
+    // is set
+    if(len&8) // process 1 real/2 complex registers (8 real elements)
+    {
+      in2r -= 8;
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+      sc = _mm256_permutevar8x32_ps(ld1, p1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p2);
+      sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+      sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+      i += 8;
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // shift the duplicating indices down by 8-rem so that real rem-1 lines
+      // up with in2[0] (the negative indices wrap around to the zeroed lanes)
+      const __m256i sh = _mm256_set1_epi32(8-rem);
+      // note msk2 accounts for 2 reals per element for the complex buffer
+      const __m256i msk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk1);
+      sc = _mm256_permutevar8x32_ps(ld1, _mm256_sub_epi32(p1, sh));
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[4]),
+            msk2);
+        ld1 = _mm256_permutevar8x32_ps(ld1, _mm256_sub_epi32(p2, sh));
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+        sum2 = _mm256_fmadd_ps(ld3, ld1, sum2);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(in2), msk2);
+        sum1 = _mm256_fmadd_ps(ld2, sc, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm256_add_ps(sum1, sum2);
+    // add the upper half and lower half of sum1 and combine into hs
+    hs = _mm256_extractf128_ps(sum1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum1), hs); // add to lower half
+    // add the upper 2 FP to the lower 2 in hs
+    hs = _mm_add_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // flip the sign on the imaginary part for conjugate
+    hs = _mm_xor_ps(hs, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 real-complex dotpcRev
+  #if !defined(DISABLE_AVX) // AVX real-complex dotpcRev
+  __attribute__((__target__("avx")))
+  inline void dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld2, ld3, sc1, sc2;
+    __m256 sum1 = _mm256_set1_ps(0.0f);
+    __m256 sum2 = sum1;
+    // in-lane index for duplicating real elements in reverse order, used on 4
+    // reals broadcast to both 128-bit lanes: [3,3,2,2] in the lower lane,
+    // [1,1,0,0] in the upper (in2 is read from the end so that element i of
+    // in1 lines up with element len-1-i of in2)
+    const __m256i p1 = _mm256_setr_epi32(3,3,2,2,1,1,0,0);
+    // register for horizontal reduction
+    __m128 hs;
+    int i = 0;
+    // in2r points one past the element of in2 that lines up with in1[i], it
+    // moves towards the start of in2 as i increases
+    complex<float> const * in2r = &in2[len];
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      in2r -= 8;
+      // the broadcasts are plain loads, which leaves 2 shuffles per register
+      // instead of 4
+      sc1 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in1[i+4])), p1);// [7,7,6,6,5,5,4,4]
+      sc2 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in1[i])), p1);  // [3,3,2,2,1,1,0,0]
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2r));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2r[4]));
+      ld2 = _mm256_mul_ps(ld2, sc1);
+      ld3 = _mm256_mul_ps(ld3, sc2);
+      sum1 = _mm256_add_ps(ld2, sum1);
+      sum2 = _mm256_add_ps(ld3, sum2);
+    }
+    // handle remaining elements (note len&7 == len%8), the last rem reals
+    // line up with the first rem complex elements of in2 in reverse order
+    const int rem = len&7;
+    if(rem)
+    {
+      // the first c reals of the remainder (all of them, or the 1-3 past the
+      // last 4) are loaded masked and broadcast, and the duplicating index
+      // shifted down by 4-c so that real c-1 lands in lane 0 (the negative
+      // indices wrap around to the zeroed lanes)
+      const int c = (rem>4) ? rem-4 : rem;
+      const __m128i sh = _mm_set1_epi32(4-c);
+      const __m128 ld1 = _mm_maskload_ps(&in1[i], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[c])));
+      sc2 = _mm256_permutevar_ps(_mm256_insertf128_ps(
+          _mm256_castps128_ps256(ld1), ld1, 1), _mm256_insertf128_si256(
+          _mm256_castsi128_si256(_mm_sub_epi32(_mm_setr_epi32(3,3,2,2), sh)),
+          _mm_sub_epi32(_mm_setr_epi32(1,1,0,0), sh), 1));
+      if(rem>4) // if remainder is > 4, need 2 registers worth
+      {
+        // the last 4 reals line up with in2[0] to in2[3]
+        sc1 = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in1[i+rem-4])), p1);
+        const __m256i msk2 = _mm256_load_si256(
+           reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(in2));
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[4]),
+            msk2);
+        ld2 = _mm256_mul_ps(ld2, sc1);
+        ld3 = _mm256_mul_ps(ld3, sc2);
+        sum1 = _mm256_add_ps(ld2, sum1);
+        sum2 = _mm256_add_ps(ld3, sum2);
+      }
+      else
+      {
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(in2), msk2);
+        ld2 = _mm256_mul_ps(ld2, sc2);
+        sum1 = _mm256_add_ps(ld2, sum1);
+      }
+    }
+    // combine both sums and reduce horizontally
+    sum1 = _mm256_add_ps(sum1, sum2);
+    // add the upper half and lower half of sum1 and combine into hs
+    hs = _mm256_extractf128_ps(sum1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum1), hs); // add to lower half
+    // add the upper 2 FP to the lower 2 in hs
+    hs = _mm_add_ps(hs, _mm_permute_ps(hs, 0x4e));
+    // flip the sign on the imaginary part for conjugate
+    hs = _mm_xor_ps(hs, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
+    // store both real and imaginary parts with one 8-byte store to avoid
+    // instruction stall with certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX real-complex dotpcRev
+  // default real-complex dotpcRev
+  __attribute__((__target__("default")))
+  inline void dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    int idx = len-1;
+    for(int i=0; i<len; ++i)
+    {
+      reSum += in1[i]*in2[idx].real();
+      imSum -= in1[i]*in2[idx--].imag(); 
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpcRev(float const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpcRev(in1, in2, len, out);
+    return out;
+  }
+
+  // complex-complex normalized dot-product (each sample normalized)
+  #if !defined(DISABLE_AVX512) // AVX512 dotpn
+  __attribute__((__target__("avx512f")))
+  inline void dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmsub_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm512_fmadd_ps(ar, bi, _mm512_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&15 == len%16), the second register
+    // of each input is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      if(rem>8)
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i+8]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i]));
+        ld2 = _mm512_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmsub_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm512_fmadd_ps(ar, bi, _mm512_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm512_add_ps(_mm512_unpacklo_ps(sumr, sumi),
+        _mm512_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [r0, i0, r1, i1]
+    hs1 = _mm_add_ps(hs1, _mm_movehl_ps(hs1, hs1)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpn
+  #if !defined(DISABLE_AVX2) // AVX2 dotpn
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmsub_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm256_fmadd_ps(ar, bi, _mm256_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmsub_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm256_fmadd_ps(ar, bi, _mm256_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpn
+  #if !defined(DISABLE_AVX) // AVX dotpn
+  __attribute__((__target__("avx")))
+  inline void dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr-AiBi and ArBi+AiBr
+      re = _mm256_sub_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_add_ps(_mm256_mul_ps(ar, bi), _mm256_mul_ps(ai, br));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr-AiBi and ArBi+AiBr
+      re = _mm256_sub_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_add_ps(_mm256_mul_ps(ar, bi), _mm256_mul_ps(ai, br));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpn
+  // default 
+  __attribute__((__target__("default")))
+  inline void dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+
+      re = (in1[i].real()*in2[i].real()-in1[i].imag()*in2[i].imag());
+      im = (in1[i].imag()*in2[i].real()+in1[i].real()*in2[i].imag());
+      // a product whose squared magnitude is below FLT_MIN (including 0) adds
+      // nothing, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0/sqrtf(sc) : 0.0f;
+      reSum += re*sc;
+      imSum += im*sc;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpn(in1, in2, len, out);
+    return out;
+  }
+  
+  // complex-complex normalized dot-product (each sample normalized) using fast
+  // reciprocal square root
+  #if !defined(DISABLE_AVX512) // AVX512 dotpnr
+  __attribute__((__target__("avx512f")))
+  inline void dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmsub_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm512_fmadd_ps(ar, bi, _mm512_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          sc);
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&15 == len%16), the second register
+    // of each input is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      if(rem>8)
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i+8]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i]));
+        ld2 = _mm512_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmsub_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm512_fmadd_ps(ar, bi, _mm512_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          sc);
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm512_add_ps(_mm512_unpacklo_ps(sumr, sumi),
+        _mm512_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [r0, i0, r1, i1]
+    hs1 = _mm_add_ps(hs1, _mm_movehl_ps(hs1, hs1)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpnr
+  #if !defined(DISABLE_AVX2) // AVX2 dotpnr
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmsub_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm256_fmadd_ps(ar, bi, _mm256_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmsub_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr-AiBi
+      im = _mm256_fmadd_ps(ar, bi, _mm256_mul_ps(ai, br)); // ArBi+AiBr
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpnr
+  #if !defined(DISABLE_AVX) // AVX dotpnr
+  __attribute__((__target__("avx")))
+  inline void dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr-AiBi and ArBi+AiBr
+      re = _mm256_sub_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_add_ps(_mm256_mul_ps(ar, bi), _mm256_mul_ps(ai, br));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr-AiBi and ArBi+AiBr
+      re = _mm256_sub_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_add_ps(_mm256_mul_ps(ar, bi), _mm256_mul_ps(ai, br));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpnr
+  // default 
+  __attribute__((__target__("default")))
+  inline void dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+
+      re = (in1[i].real()*in2[i].real()-in1[i].imag()*in2[i].imag());
+      im = (in1[i].imag()*in2[i].real()+in1[i].real()*in2[i].imag());
+      // a product whose squared magnitude is below FLT_MIN (including 0) adds
+      // nothing, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0/sqrtf(sc) : 0.0f;
+      reSum += re*sc;
+      imSum += im*sc;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpnr(in1, in2, len, out);
+    return out;
+  }
+  
+  // complex-complex conjugate normalized dot-product (each sample normalized)
+  #if !defined(DISABLE_AVX512) // AVX512 dotpcn
+  __attribute__((__target__("avx512f")))
+  inline void dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm512_fmsub_ps(ai, br, _mm512_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&15 == len%16), the second register
+    // of each input is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      if(rem>8)
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i+8]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i]));
+        ld2 = _mm512_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm512_fmsub_ps(ai, br, _mm512_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm512_add_ps(_mm512_unpacklo_ps(sumr, sumi),
+        _mm512_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [r0, i0, r1, i1]
+    hs1 = _mm_add_ps(hs1, _mm_movehl_ps(hs1, hs1)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpcn
+  #if !defined(DISABLE_AVX2) // AVX2 dotpcn
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm256_fmsub_ps(ai, br, _mm256_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm256_fmsub_ps(ai, br, _mm256_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpcn
+  #if !defined(DISABLE_AVX) // AVX dotpcn
+  __attribute__((__target__("avx")))
+  inline void dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr+AiBi and AiBr-ArBi
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_sub_ps(_mm256_mul_ps(ai, br), _mm256_mul_ps(ar, bi));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr+AiBi and AiBr-ArBi
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_sub_ps(_mm256_mul_ps(ai, br), _mm256_mul_ps(ar, bi));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // 1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpcn
+  // default 
+  __attribute__((__target__("default")))
+  inline void dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+
+      re = (in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag());
+      im = (in1[i].imag()*in2[i].real()-in1[i].real()*in2[i].imag());
+      // a product whose squared magnitude is below FLT_MIN (including 0) adds
+      // nothing, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0/sqrtf(sc) : 0.0f;
+      reSum += re*sc;
+      imSum += im*sc;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpcn(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpcn(in1, in2, len, out);
+    return out;
+  }
+  
+  // complex-complex conjugate normalized dot-product (each sample normalized)
+  // using fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 dotpcnr
+  __attribute__((__target__("avx512f")))
+  inline void dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m512 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m512 sumr = _mm512_set1_ps(0.0f); // real part of dot-product
+    __m512 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish dot-product (fold and sum m256)
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm512_fmsub_ps(ai, br, _mm512_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          sc);
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&15 == len%16), the second register
+    // of each input is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      if(rem>8)
+      {
+        const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i+8]));
+        ld3 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld3 = _mm512_maskz_loadu_ps(mk,
+            reinterpret_cast<float const *>(&in2[i]));
+        ld2 = _mm512_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm512_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm512_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm512_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm512_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm512_fmsub_ps(ai, br, _mm512_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          sc);
+      sumr = _mm512_fmadd_ps(re, sc, sumr);
+      sumi = _mm512_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm512_add_ps(_mm512_unpacklo_ps(sumr, sumi),
+        _mm512_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // add the upper half of ld1 to the lower half (cast through double to
+    // avoid requiring the AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(ld1), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(ld1), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [r0, i0, r1, i1]
+    hs1 = _mm_add_ps(hs1, _mm_movehl_ps(hs1, hs1)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 dotpcnr
+  #if !defined(DISABLE_AVX2) // AVX2 dotpcnr
+  __attribute__((__target__("avx2,fma")))
+  inline void dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm256_fmsub_ps(ai, br, _mm256_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi)); // ArBr+AiBi
+      im = _mm256_fmsub_ps(ai, br, _mm256_mul_ps(ar, bi)); // AiBr-ArBi
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |product|^2
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_fmadd_ps(re, sc, sumr);
+      sumi = _mm256_fmadd_ps(im, sc, sumi);
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX2 dotpcnr
+  #if !defined(DISABLE_AVX) // AVX dotpcnr
+  __attribute__((__target__("avx")))
+  inline void dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    __m256 ld1, ld2, ld3, ld4, ar, ai, br, bi, re, im, sc;
+    __m256 sumr = _mm256_set1_ps(0.0f); // real part of dot-product
+    __m256 sumi = sumr;                 // imaginary part of dot-product
+    // products whose squared magnitude is below FLT_MIN add nothing: zero
+    // products (including the zeroed lanes of the last registers), which
+    // would give 0*inf = NaN, and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    __m128 hs;  // horizontal sum to finish dot-product
+    int i = 0;
+    // note: 2 registers of each input are split into a register of real
+    // parts and one of imaginary parts (in the same lane order for both
+    // inputs), so each product, its squared magnitude and its scale are
+    // computed once per element
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld4 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr+AiBi and AiBr-ArBi
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_sub_ps(_mm256_mul_ps(ai, br), _mm256_mul_ps(ar, bi));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // handle remaining elements (note len&7 == len%8), the second register
+    // of each input is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      if(rem>4)
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in1[i+4]), msk);
+        ld3 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+        ld4 = _mm256_maskload_ps(reinterpret_cast<float const *>(
+            &in2[i+4]), msk);
+      }
+      else
+      {
+        // 2 floats per complex, so double rem for mask
+        const __m256i msk = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+            msk);
+        ld3 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+            msk);
+        ld2 = _mm256_setzero_ps();
+        ld4 = ld2;
+      }
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      br = _mm256_shuffle_ps(ld3, ld4, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld3, ld4, 0xdd); // imaginary parts of in2
+      // real and imaginary parts of the product, ArBr+AiBi and AiBr-ArBi
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      im = _mm256_sub_ps(_mm256_mul_ps(ai, br), _mm256_mul_ps(ar, bi));
+      // |product|^2
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
+      // ~1/|product|, 0 for the products that add nothing
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      sumr = _mm256_add_ps(sumr, _mm256_mul_ps(re, sc));
+      sumi = _mm256_add_ps(sumi, _mm256_mul_ps(im, sc));
+    }
+    // horizontal reduction, interleaving the sums gives [re, im] pairs
+    ld1 = _mm256_add_ps(_mm256_unpacklo_ps(sumr, sumi),
+        _mm256_unpackhi_ps(sumr, sumi)); // [r0, i0, r1, i1 | ...]
+    // fold and sum the halves of ld1 into hs
+    hs = _mm256_extractf128_ps(ld1, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(ld1), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX dotpcnr
+  // default 
+  __attribute__((__target__("default")))
+  inline void dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, complex<float> &out)
+  {
+    float reSum = 0.0f;
+    float imSum = 0.0f;
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+
+      re = (in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag());
+      im = (in1[i].imag()*in2[i].real()-in1[i].real()*in2[i].imag());
+      // a product whose squared magnitude is below FLT_MIN (including 0) adds
+      // nothing, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0/sqrtf(sc) : 0.0f;
+      reSum += re*sc;
+      imSum += im*sc;
+    }
+    out.real(reSum);
+    out.imag(imSum);
+    return;
+  }
+  // wrapper returning result by value, must be defined after every target
+  // version so the calls go through the runtime dispatcher
+  inline complex<float> dotpcnr(complex<float> const * const in1,
+      complex<float> const * const in2, const int len)
+  {
+    complex<float> out;
+    dotpcnr(in1, in2, len, out);
     return out;
   }
 
