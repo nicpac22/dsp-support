@@ -175,7 +175,10 @@ namespace TRIG
     const __m512 mx = _mm512_mask_blend_ps(sw, ax, ay);
     __mmask16 big = _mm512_cmp_ps_mask(mn, _mm512_mul_ps(mx,
         _mm512_set1_ps(0.414213568f)), _CMP_GT_OQ);
-    // both infinite: angle is the pi/4 base, both zero: angle is 0
+    // both infinite: 0/mx = 0/INF, so the angle is the pi/4 base; both zero:
+    // 0/1, so the angle is 0.  NaN needs no special case: one of mn and mx
+    // is the NaN and reaches u through n or d (a NaN x with an infinite y
+    // gives 0/NaN, since d stays mx there rather than becoming 1)
     const __mmask16 inf = _mm512_cmp_ps_mask(mn,
         _mm512_set1_ps(__builtin_inff()), _CMP_EQ_OQ);
     const __mmask16 zero = _mm512_cmp_ps_mask(mx, _mm512_setzero_ps(),
@@ -183,7 +186,7 @@ namespace TRIG
     __m512 n = _mm512_mask_sub_ps(mn, big, mn, mx);
     __m512 d = _mm512_mask_add_ps(mx, big, mn, mx);
     n = _mm512_mask_mov_ps(n, inf, _mm512_setzero_ps());
-    d = _mm512_mask_mov_ps(d, inf | zero, _mm512_set1_ps(1.0f));
+    d = _mm512_mask_mov_ps(d, zero, _mm512_set1_ps(1.0f));
     big |= inf;
     const __m512 u = _mm512_div_ps(n, d);
     const __m512 z = _mm512_mul_ps(u, u);
@@ -222,8 +225,7 @@ namespace TRIG
         _mm512_set1_ps(3.14159274f), a), _mm512_set1_ps(-8.74227766e-08f));
     a = _mm512_castsi512_ps(_mm512_or_epi32(_mm512_castps_si512(a),
         _mm512_andnot_epi32(noSign, _mm512_castps_si512(y))));
-    // NaN in, NaN out
-    return _mm512_mask_add_ps(a, _mm512_cmp_ps_mask(x, y, _CMP_UNORD_Q), x, y);
+    return a;
   }
 
   //============================================================== AVX2 ====//
@@ -315,7 +317,7 @@ namespace TRIG
     __m256 n = sel256(big, mn, _mm256_sub_ps(mn, mx));
     __m256 d = sel256(big, mx, _mm256_add_ps(mn, mx));
     n = _mm256_andnot_ps(inf, n);
-    d = sel256(_mm256_or_ps(inf, zero), d, _mm256_set1_ps(1.0f));
+    d = sel256(zero, d, _mm256_set1_ps(1.0f)); // see atan2_512
     big = _mm256_or_ps(big, inf);
     const __m256 u = _mm256_div_ps(n, d);
     const __m256 z = _mm256_mul_ps(u, u);
@@ -353,8 +355,7 @@ namespace TRIG
           _mm256_set1_ps(3.14159274f), a), _mm256_set1_ps(-8.74227766e-08f)));
     }
     a = _mm256_or_ps(a, _mm256_andnot_ps(noSign, y));
-    const __m256 nan = _mm256_cmp_ps(x, y, _CMP_UNORD_Q);
-    return sel256(nan, a, _mm256_add_ps(x, y));
+    return a;
   }
 
   //=============================================================== AVX ====//
@@ -448,7 +449,7 @@ namespace TRIG
     __m256 n = sel256(big, mn, _mm256_sub_ps(mn, mx));
     __m256 d = sel256(big, mx, _mm256_add_ps(mn, mx));
     n = _mm256_andnot_ps(inf, n);
-    d = sel256(_mm256_or_ps(inf, zero), d, one);
+    d = sel256(zero, d, one); // see atan2_512
     big = _mm256_or_ps(big, inf);
     const __m256 u = _mm256_div_ps(n, d);
     const __m256 z = _mm256_mul_ps(u, u);
@@ -485,8 +486,7 @@ namespace TRIG
           _mm256_set1_ps(3.14159274f), a), _mm256_set1_ps(-8.74227766e-08f)));
     }
     a = _mm256_or_ps(a, _mm256_andnot_ps(noSign, y));
-    const __m256 nan = _mm256_cmp_ps(x, y, _CMP_UNORD_Q);
-    return sel256(nan, a, _mm256_add_ps(x, y));
+    return a;
   }
 
   //=============================================================== atan2 ===//

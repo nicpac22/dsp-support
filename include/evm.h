@@ -183,7 +183,7 @@
 //    dive = divide-expand, point-by-point divide of 2 real-valued input
 //        buffers, placing the result in the real part of a complex output
 //        buffer
-//    divre = same as dive but with a reciprocal approximation instead of a
+//    divre = same as dive but with a reciprocal approximation instead of a
 //        true divide
 //    divnre = same as dive but with a reciprocal approximation and 1-stage
 //        Newton-Raphson refinement (offers a good balance between speed and
@@ -202,6 +202,29 @@
 //    divnrSqrt = same as divSqrt but with a reciprocal squared root
 //        approximation and 1-stage Newton-Raphson refinement
 //
+//  Inversion:
+//    inv = inverse of a real-valued buffer (1/x)
+//    invr = inverse of a real-valued buffer using a fast reciprocal
+//        approximation
+//    invnr = same as invr but with a 1-stage Newton-Raphson refinement
+//    invs = inverse of a real-valued buffer multiplied by a constant scale
+//        factor
+//    invrs = inverse of a real-valued buffer using a fast reciprocal
+//        approximation multiplied by a constant scale factor
+//    invnrs = same as invrs but with a 1-stage Newton-Raphson refinement
+//    invSqrt = inverse of the square root of a real-valued input buffer
+//    invrSqrt = inverse of the square root of a real-valued input buffer using
+//        a fast reciprocal square root approximation
+//    invnrSqrt = same as invrSqrt but with a 1-stage Newton-Raphson
+//        refinement
+//    invSqrts = constant scale factor divided by the square root of a
+//        real-valued input buffer
+//    invrSqrts = constant scale factor divided by the square root of a
+//        real-valued input buffer using a fast inverse square root
+//        approximation
+//    invnrSqrts = same as invrSqrts but with a 1-stage Newton-Raphson
+//        refinement
+//
 //  Dot-product:
 //    dotp = dot-product of two input buffers
 //    dotpc = conjugate dot-product of two input buffers, second input
@@ -209,30 +232,65 @@
 //    dotpRev = dot-product of two input buffers, second input reversed
 //    dotpcRev = conjugate dot-product of two input buffers, second input
 //        conjugated and reversed
-//    dotpn = dot-product of two complex input buffers, each product normalized
+//    dotpn = dot-product of two complex input buffers, each product normalized
 //        by its magnitude prior to summing, using true sqrt div
-//    dotpnr = dot-product of two complex input buffers, each product normalized
+//    dotpnr = dot-product of two complex input buffers, each product normalized
 //        by its magnitude prior to summing, using a fast reciprocal square
 //        root approximation
-//    dotpcn = dot-product of two complex input buffers, second input
+//    dotpcn = dot-product of two complex input buffers, second input
 //        conjugated, each product normalized by its magnitude prior to summing,
 //        using true sqrt div
 //    dotpcnr = dot-product of two complex input buffers, second input
 //        conjugated, each product normalized by its magnitude prior to summing,
 //        using a fast reciprocal square root approximation
 //
-//  Power/Magnitude:
+//  Power/Magnitude/norm:
 //    pow2 = squares each element of an input buffer
 //    pow4 = raises each element of an input buffer to the 4th power
 //    pow8 = raises each element of an input buffer to the 8th power
+//    magSq = magnitude squared of input buffer
 //    mag = magnitude of input buffer
 //    magr = magnitude of a complex input buffer using a reciprocal square
 //        root approximation (trades accuracy for speed)
-//    magSq = magnitude squared of a complex input buffer, faster than mag as
-//        it doesn't have to compute a square root
+//    nmag = normalize complex elements by their magnitude
+//    nmagr = normalize complex elements by their magnitude using a reciprocal
+//        square root approximation
+//    nmagnr = same as nmagr but with a 1-stage Newton-Raphson refinement
+//    magSum = magnitude of a complex-valued input buffer summed with output
+//        buffer with optional multipliers for each, intended for spectral
+//        averaging
+//    magrSum = magnitude of a complex-valued input buffer using a fast
+//        reciprocal approximation summed with the output buffer with optional
+//        multipliers for each, intended for spectral averaging
+//    magBias = magnitude of a complex-valued input buffer summed with a
+//        constant bias value
+//    magrBias = magnitude of a complex-valued input buffer using a fast
+//        reciprocal square root approximation summed with a constant bias
+//        value
+//    magSqSum = magnitude squared of a complex-valued input buffer summed with
+//        the output buffer with optional multipliers for both input and
+//        output, intended for spectral averaging
+//    magSqMult = magnitude squared of a complex or real-valued input buffer
+//        multiplied by the elements of a second real-valued input buffer
+//    magSqMults = magnitude squared of a complex or real-valued input buffer
+//        multiplied by the elements of a second real-valued input buffer and
+//        a constant scale factor
+//    magSqDiv = magnitude squared of a complex or real-valued input buffer
+//        divided by the elements of a second real-valued input buffer
+//    magSqDivr = magnitude squared of a complex or real-valued input buffer
+//        divided by the elements of a second real-valued input buffer using
+//        a fast reciprocal approximation
+//    magSqDiff = magnitude squared of the difference of two complex-valued
+//        input buffers, i.e. |in1-in2|^2
 //    normSq = compute the Euclidean norm squared of an input buffer or the
 //        product of two input buffers
 //
+//  Summation:
+//    sum = sum of elements in a buffer
+//    sumSqDiff = summed squared difference between two complex-valued buffers
+//    wsum = point-by-point weighted sum of values in two buffers, multiple
+//        different versions for z[i]=x[i]+w*y[i] and z[i]=w1*x[i]+w2*y[i]
+//    
 //  Conversion:
 //    cnvrtInt8ToFloat = convert signed 8-bit integers to 32-bit floats
 //    cnvrtInt16ToFloat = convert signed 16-bit integers to 32-bit floats
@@ -244,11 +302,60 @@
 //        coordinate system, phase in cycles
 //    cartToPolRad = same as cartToPol, phase in radians
 //
+//  Exponential/Logarithmic:
+//    exp = compute the natural exponent of each element of an input buffer
+//        e^(in[i])
+//    log = compute the natural logarithm of each element of an input buffer
+//        (log(in[i]))
+//
+//  Trigonometric/Transcendentals:
+//    cxexp = compute a complex exponential of an input buffer (e^(j*in[i]))
+//    cxexpsi = same as cxexp with a scale factor applied to input and optional
+//        constant added to input (e^(j*(K*in[i]+C)))
+//    cxexpso = same as cxexp with a scale factor applied to the output and
+//        optional constant added to the input (K*e^(j*(in[i]+C)))
+//    cxexpss = same as cxexp with scale factors applied to both input and
+//        output and optional constant added to input (Ko*e^(j*(Ki*in[i]+C)))
+//    fmmod = FM modulate a buffer of real-valued input data, assuming buffer
+//         of input phases has already been integrated for FM modulation
+//    fmmods = FM modulate a buffer of real-valued input data with a scale
+//        factor applied to the output, assuming buffer of input phases has
+//        already been integrated for FM modulation
+//    atan2 = arctangent of elements in a complex-valued buffer in radians
+//    atan2s =  arctangent of elements in a complex-valued buffer in radians
+//        with a constant scale factor applied to the output
+//    multcatan2 = atan2 in radians of the complex-conjugate multiply of two
+//        input buffers, second input conjugated
+//    multcatan2s = atan2 in radians of the complex-conjugate multiply of two
+//        input buffers, second input conjugated, with a costant scale factor
+//        applied to the output
+//
 //  Specialized:
 //    tune = tunes complex data with a numerically controlled oscillator (NCO)
+//        with phase in radians, this version uses a complex multiply to
+//        advance the phase of the oscillator which is much faster than a
+//        direct sin/cos computation but may cause a slow ramp of the
+//        the difference between the desired and actual phase which resets to
+//        zero on each call to the function giving a sawtooth effect
+//    tunecx = same as tune but with phase in cycles
+//    tunesp = tunes complex data with a numerically controlled osccillator
+//        (NCO) using a direct single-precision sin/cos computation on a
+//        double-precision phase accumulator with phase in cycles, this will
+//        be more accurate than tune/tunecx (no sawtooth effect) but will be
+//        much slower
 //    fs2Shift = Fs/2 frequency shift for complex data
 //    agc = run an automatic gain control over an input buffer, adaptively
 //        adjusting its magnitude squared to try and maintain a constant value
+//    meanStddev = compute a running mean and standard deviation of a buffer
+//        using an exponential averager and reciprocal square root
+//        approximation for standard deviation
+//    meanStddevSum = same as meanStddev but sum the mean and standard
+//        deviation on each sample, with standard deviation multiplied by a
+//        constant (mean+K*stddev), intended for computing thresholds on a
+//        per-sample basis based on number of standard deviations above the mean 
+//    snrCnvrt = converts a normalized correlation quality metric to an SNR
+//        approximation by compyting in[i]/max(1-in[i], eps) using a reciprocal
+//        approximation
 //
 //  Important notes on speed/accuracy:
 //    1. Some division methods compute 2 registers worth of divides at once and
@@ -1124,6 +1231,230 @@ namespace EVM
   inline void divnrSqrt(complex<float> const * const in1,
       float const * const in2, const int len, complex<float> * const out);
 
+  //===========//
+  // Inversion //
+  //===========//
+  // Inverse of a real-valued input buffer, output may be the same as input
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  inline void inv(float const * const in, const int len, float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void inv(float const * const in, const int len, float * const out,
+      const float eps);
+  
+  // Inverse of a real-valued input buffer using a fast reciprocal
+  // approximation, output may be the same as input
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  inline void invr(float const * const in, const int len, float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void invr(float const * const in, const int len, float * const out,
+      const float eps);
+  
+  // Inverse of a real-valued input buffer using a fast reciprocal approximation
+  // with 1 Newton-Raphson stage for refinement, output may be the same as
+  // input.  This version is comparable to inv() but with increased efficiency.
+  // It is within about 0.5 ulp of the exact result with AVX512 and 3 ulp with
+  // AVX2/AVX, and zero and infinite inputs give the same results as inv().
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  inline void invnr(float const * const in, const int len, float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    out = inverse of input elements
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void invnr(float const * const in, const int len, float * const out,
+      const float eps);
+  
+  // Inverse of a real-valued input buffer multiplied by a scale factor (i.e.
+  // scale/in), output may be the same as input
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/in
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/max(in, eps)
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out, const float eps);
+  
+  // Inverse of a real-valued input buffer using a fast reciprocal
+  // approximation multiplied by a scale factor (i.e. scale/in), output may be
+  // the same as input
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/in
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/max(in, eps)
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps);
+  
+  // Inverse of a real-valued input buffer using a fast reciprocal approximation
+  // with 1 Newton-Raphson stage for refinement, multiplied by a scale factor
+  // (i.e. scale/in), output may be the same as input.  This version is
+  // comparable to invs() but with increased efficiency.  It is within about
+  // 1.5 ulp of the exact result with AVX512 and 3 ulp with AVX2/AVX, and zero
+  // and infinite inputs give the same results as invs().  Like invrs(), the
+  // SIMD versions give 0 when |in| is above about 8.5e37 (where 1/in is below
+  // FLT_MIN) with AVX2/AVX or when enableFastDenormals() has been called.
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/in
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out);
+  // Overloaded function that incorporates a small epsilon to compare (max)
+  // with the input data to avoid taking the inverse of a zero-value or
+  // negative number (intended for taking the inverse of a precomputed
+  // magnitude or magnitude squared buffer)
+  //    in = input buffer of elements to invert
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply inverse by
+  //    out = result of scale/max(in, eps)
+  //    eps = small value to compare with input to avoid taking the inverse of
+  //        zero or negative values
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps);
+  
+  // Inverse square root of a real-valued input buffer, output may be the
+  // same as input
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    out = result of 1/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invSqrt(float const * const in, const int len, float * const out,
+      const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invSqrt(float const * const in, const int len, float * const out);
+  
+  // Inverse square root of a real-valued input buffer using a fast
+  // reciprocal square root approximation, output may be the same as input
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    out = result of 1/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invrSqrt(float const * const in, const int len, float * const out,
+      const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invrSqrt(float const * const in, const int len,
+      float * const out);
+  
+  // Inverse square root of a real-valued input buffer using a fast reciprocal
+  // square root approximation with 1 Newton-Raphson stage for refinement,
+  // output may be the same as input.  This version is comparable to invSqrt()
+  // but with increased efficiency.  It is within about 1 ulp of the exact
+  // result with AVX512 and 3.5 ulp with AVX2/AVX, and zero and infinite inputs
+  // give the same results as invSqrt().
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    out = result of 1/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out, const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out);
+  
+  // Constant scale factor divided by the square root of a real-valued input
+  // buffer, output may be the same as input
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply by inverse square root
+  //    out = result of scale/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out, const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out);
+  
+  // Constant scale factor divided by the square root of a real-valued input
+  // buffer using a fast reciprocal square root approximation, output may be
+  // the same as input
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply by inverse square root
+  //    out = result of scale/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out);
+  
+  // Constant scale factor divided by the square root of a real-valued input
+  // buffer using a fast reciprocal square root approximation with 1
+  // Newton-Raphson stage for refinement, output may be the same as input.  This
+  // version is comparable to invSqrts() but with increased efficiency.  It is
+  // within about 1.5 ulp of the exact result with AVX512 and 4 ulp with
+  // AVX2/AVX, and zero and infinite inputs give the same results as invSqrts().
+  //    in = input buffer of elements to compute 1/sqrt
+  //    len = number of elements to process
+  //    scale = constant scale factor to multiply by inverse square root
+  //    out = result of scale/sqrt(max(in, eps))
+  //    eps = small value to compare with input to avoid taking the square root
+  //        of a negative value
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps);
+  // Overloaded function that defaults eps to 0.0 (required as icpx does not
+  // allow default values on multiversioned functions)
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out);
+
   //=============//
   // Dot-Product //
   //=============//
@@ -1316,6 +1647,174 @@ namespace EVM
   //    out = output buffer to recieve result of |in|
   inline void magr(complex<float> const * const in, const int len,
       float * const out);
+  
+  // Normalize a buffer of complex input values by their magnitude, output may
+  // be the same as input.  An element whose squared magnitude is below
+  // FLT_MIN (a magnitude below about 1e-19), including 0, gives 0, and so
+  // does one whose squared magnitude overflows (a magnitude above about
+  // 1.8e19).
+  //    in = input buffer to normalize
+  //    len = number of elements to process
+  //    out = normalized values (in/|in|)
+  inline void nmag(complex<float> const * const in, const int len,
+      complex<float> * const out);
+  
+  // Normalize a buffer of complex input values by their magnitude using a
+  // fast reciprocal square root approximation, output may be the same as
+  // input.  An element whose squared magnitude is below FLT_MIN (a magnitude
+  // below about 1e-19), including 0, gives 0, and so does one whose squared
+  // magnitude overflows (a magnitude above about 1.8e19).
+  //    in = input buffer to normalize
+  //    len = number of elements to process
+  //    out = normalized values (in/|in|)
+  inline void nmagr(complex<float> const * const in, const int len,
+      complex<float> * const out);
+  
+  // Normalize a buffer of complex input values by their magnitude using a
+  // fast reciprocal square root approximation with 1 Newton-Raphson stage
+  // for refinement, output may be the same as input.  This version is
+  // comparable to nmag() but with increased efficiency.  It is within about
+  // 2.5 ulp of the exact result with AVX512 and 4.5 ulp with AVX2/AVX.  An
+  // element whose squared magnitude is below FLT_MIN (a magnitude below
+  // about 1e-19), including 0, gives 0, and so does one whose squared
+  // magnitude overflows (a magnitude above about 1.8e19).
+  //    in = input buffer to normalize
+  //    len = number of elements to process
+  //    out = normalized values (in/|in|)
+  inline void nmagnr(complex<float> const * const in, const int len,
+      complex<float> * const out);
+  
+  // Magnitude of a complex-valued input buffer summed with the values of an
+  // output buffer with an optional scale factor for both input and output,
+  // output may NOT be the same as input
+  //    in = input buffer to compute magnitude and sum
+  //    len = number of elements to process
+  //    out = output buffer to sum with magnitude of input
+  //    w1 = optional weight (scale factor) to apply to magnitude of input
+  //        data
+  //    w2 = optional weight (scale factor) to apply to output buffer prior to
+  //        sum
+  inline void magSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2);
+  
+  // Magnitude of a complex-valued input buffer using a fast reciprocal square
+  // root approximation summed with the values of an output buffer with an
+  // optional scale factor for both input and output, output may NOT be the
+  // same as input
+  //    in = input buffer to compute magnitude and sum
+  //    len = number of elements to process
+  //    out = output buffer to sum with magnitude of input
+  //    w1 = optional weight (scale factor) to apply to magnitude of input
+  //        data
+  //    w2 = optional weight (scale factor) to apply to output buffer prior to
+  //        sum
+  inline void magrSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2);
+  
+  // Magnitude of a complex-valued input buffer summed with a constant
+  // real-valued bias, output may be the same as input
+  //    in = input buffer to compute magnitude of
+  //    len = number of elements to process
+  //    out = output buffer to place result of |in|+bias
+  //    bias = constant value to sum with |in|
+  inline void magBias(complex<float> const * const in, const int len,
+      float * const out, const float bias);
+  
+  // Magnitude of a complex-valued input buffer using a fast reciprocal square
+  // root approximation summed with a constant real-valued bias, output may be
+  // the same as input
+  //    in = input buffer to compute magnitude of
+  //    len = number of elements to process
+  //    out = output buffer to place result of |in|+bias
+  //    bias = constant value to sum with |in|
+  inline void magrBias(complex<float> const * const in, const int len,
+      float * const out, const float bias);
+  
+  // Magnitude squared of a complex-valued input buffer summed with the values
+  // of an output buffer with an optional scale factor for both input and
+  // output, output may NOT be the same as input
+  //    in = input buffer to compute magnitude squared and sum
+  //    len = number of elements to process
+  //    out = output buffer to sum with magnitude squared of input
+  //    w1 = optional weight (scale factor) to apply to magnitude squared of
+  //        input data
+  //    w2 = optional weight (scale factor) to apply to output buffer prior to
+  //        sum
+  inline void magSqSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2);
+  
+  // Magnitude squared of an input buffer multiplied by the elements of a
+  // second input buffer, output may be the same as either input
+  //    in1 = input buffer to compute magnitude squared of
+  //    in2 = input buffer to multiply |in1|^2 by
+  //    len = number of elements to process
+  //    out = output buffer to hold result of |in1|^2 * in2
+  inline void magSqMult(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out);
+  inline void magSqMult(float const * const in1, float const * const in2,
+      const int len, float * const out);
+
+  // Magnitude squared of an input buffer multiplied by the elements of a
+  // second input buffer and a constant scale factor, output may be the same
+  // as either input
+  //    in1 = input buffer to compute magnitude squared of
+  //    in2 = input buffer to multiply |in1|^2 by
+  //    len = number of elements to process
+  //    scale = constant scale factor to apply to result
+  //    out = output buffer to hold result of |in1|^2 * in2 * scale
+  inline void magSqMults(complex<float> const * const in1,
+      float const * const in2, const int len, const float scale,
+      float * const out);
+  inline void magSqMults(float const * const in1, float const * const in2,
+      const int len, const float scale, float * const out);
+  
+  // Magnitude squared of an input buffer divided by the elements of a second
+  // input buffer, with optional epsilon to compare (max) with divisor to avoid
+  // divide by 0, output may be the same as either input
+  //    in1 = input buffer to compute magnitude squared of
+  //    in2 = input buffer to divide |in1|^2 by
+  //    len = number of elements to process
+  //    out = output buffer to hold result of |in1|^2 / in2 or
+  //        |in1|^2 / max(in2, eps)
+  //    eps = small value to compare with in2 to avoid divide by 0 or negative
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out);
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out);
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps);
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps);
+
+  // Magnitude squared of an input buffer divided by the elements of a second
+  // input buffer using a fast reciprocal approximation, with optional epsilon
+  // to compare (max) with divisor to avoid divide by 0, output may be the same
+  // as either input
+  //    in1 = input buffer to compute magnitude squared of
+  //    in2 = input buffer to divide |in1|^2 by
+  //    len = number of elements to process
+  //    out = output buffer to hold result of |in1|^2 / in2 or
+  //        |in1|^2 / max(in2, eps)
+  //    eps = small value to compare with in2 to avoid divide by 0 or negative
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out);
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out);
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps);
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps);
+
+  // Magnitude squared of the difference of two complex valued input buffers,
+  // output may be the same as either input
+  //    in1 = first input buffer for difference
+  //    in2 = second input buffer for difference
+  //    len = number of elements to process
+  //    out = buffer to hold result of |in1-in2|^2
+  inline void magSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out);
 
   //========================//
   // Euclidean Norm Squared //
@@ -1332,6 +1831,14 @@ namespace EVM
   // slower than the reference versions due to the extra copy
   inline float normSq(float const * const in, const int len);
   inline float normSq(complex<float> const * const in, const int len);
+
+  //===========//
+  // Summation //
+  //===========//
+//    sum = sum of elements in a buffer
+//    sumSqDiff = summed squared difference between two complex-valued buffers
+//    wsum = weighted sum of values in two buffers
+
 
   //===================================//
   // Unit/Coordinate System Conversion //
@@ -1438,6 +1945,36 @@ namespace EVM
   //    out = output buffer of polar coordinates
   inline void cartToPolRad(complex<float> const * const in, const int len,
       complex<float> * const out);
+  
+  //=========================//
+  // Exponential/Logarithmic //
+  //=========================//
+//    exp = compute the natural exponent of each element of an input buffer
+//        e^(in[i])
+//    log = compute the natural logarithm of each element of an input buffer
+//        (log(in[i]))
+
+  //===============================//
+  // Trigonometric/Transcendentals //
+  //===============================//
+//    cxexp = compute a complex exponential of an input buffer (e^(j*in[i]))
+//    cxexpsi = same as cxexp with a scale factor applied to input and optional
+//        constant added to input (e^(j*(K*in[i]+C)))
+//    cxexpso = same as cxexp with a scale factor applied to the output and
+//        optional constant added to the input (K*e^(j*(in[i]+C)))
+//    cxexpss = same as cxexp with scale factors applied to both input and
+//        output and optional constant added to input (Ko*e^(j*(Ki*in[i]+C)))
+//    fmmod = FM modulate a buffer of real-valued input data
+//    fmmods = FM modulate a buffer of real-valued input data with a scale
+//        factor applied to the output
+//    atan2 = arctangent of elements in a complex-valued buffer in radians
+//    atan2s =  arctangent of elements in a complex-valued buffer in radians
+//        with a constant scale factor applied to the output
+//    multcatan2 = atan2 in radians of the complex-conjugate multiply of two
+//        input buffers, second input conjugated
+//    multcatan2s = atan2 in radians of the complex-conjugate multiply of two
+//        input buffers, second input conjugated, with a costant scale factor
+//        applied to the output
 
   //=======================//
   // Specialized Functions //
@@ -1480,6 +2017,11 @@ namespace EVM
       const float phInit, const float phIncr, complex<float> * const out,
       complex<float> * const phOut);
 
+//    tunecx = same as tune but with phase in cycles
+//    tunesp = tunes complex data with a numerically controlled osccillator
+//        (NCO) using a direct single-precision sin/cos computation on a
+//        double-precision phase accumulator with phase in cycles
+
   // Implements a Fs/2 frequency shift (where Fs is the sampling rate) for
   // complex data
   //    in = input buffer to apply frequency shift to
@@ -1519,6 +2061,17 @@ namespace EVM
   inline float agc(complex<float> const * const in, const int len,
       const float init, const float desired, complex<float> * const out,
       float * const gains);
+  
+//    meanStddev = compute a running mean and standard deviation of a buffer
+//        using using an exponential averager and reciprocal square root
+//        approximation for standard deviation
+//    meanStddevSum = same as meanStddev but sum the mean and standard
+//        deviation on each sample, with standard deviation multiplied by a
+//        constant (mean+K*stddev), intended for computing thresholds on a
+//        per-sample basis based on number of standard deviations above the mean 
+//    snrCnvrt = converts a normalized correlation quality metric to an SNR
+//        approximation by compyting in[i]/max(1-in[i], eps) using a reciprocal
+//        approximation
 
   //================================//
   // Helper Function Implementation //
@@ -15148,6 +15701,1781 @@ namespace EVM
     divnrSqrt(in1, in2, len, out, 0.0f);
   }
 
+  //===========================================//
+  // Vector Inversion function implementations //
+  //===========================================//
+  // 1/in
+  #if !defined(DISABLE_AVX512) // AVX512 inv
+  __attribute__((__target__("avx512f")))
+  inline void inv(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_div_ps(one, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_maskz_div_ps(mk, one, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 inv
+  #if !defined(DISABLE_AVX) // AVX inv
+  __attribute__((__target__("avx")))
+  inline void inv(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX inv
+  // default 
+  __attribute__((__target__("default")))
+  inline void inv(float const * const in, const int len, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/in[i];
+    return;
+  }
+  
+  // 1/max(in, eps)
+  #if !defined(DISABLE_AVX512) // AVX512 inv
+  __attribute__((__target__("avx512f")))
+  inline void inv(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_div_ps(one, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_maskz_div_ps(mk, one, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 inv
+  #if !defined(DISABLE_AVX) // AVX inv
+  __attribute__((__target__("avx")))
+  inline void inv(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX inv
+  // default 
+  __attribute__((__target__("default")))
+  inline void inv(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/std::max(in[i], eps);
+    return;
+  }
+  
+  // 1/in with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invr
+  __attribute__((__target__("avx512f")))
+  inline void invr(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_rcp14_ps(ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_maskz_rcp14_ps(mk, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invr
+  #if !defined(DISABLE_AVX) // AVX invr
+  __attribute__((__target__("avx")))
+  inline void invr(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_rcp_ps(ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_rcp_ps(ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invr
+  // default 
+  __attribute__((__target__("default")))
+  inline void invr(float const * const in, const int len, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/in[i];
+    return;
+  }
+  
+  // 1/max(in, eps) with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invr
+  __attribute__((__target__("avx512f")))
+  inline void invr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_rcp14_ps(ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_maskz_rcp14_ps(mk, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invr
+  #if !defined(DISABLE_AVX) // AVX invr
+  __attribute__((__target__("avx")))
+  inline void invr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_rcp_ps(ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_rcp_ps(ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invr
+  // default 
+  __attribute__((__target__("default")))
+  inline void invr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/std::max(in[i], eps);
+    return;
+  }
+  
+  // 1/in with fast reciprocal approximation and 1 stage Newton-Raphson
+  // refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnr
+  __attribute__((__target__("avx512f")))
+  inline void invnr(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    // one newton-raphson stage, r + r*(1-x*r) for x = in and r = ~1/x, applied
+    // only where 1-x*r > -1: x = 0 or INF make it NaN (and r = INF from a
+    // denormal x makes it -INF), and those lanes keep r, which is already the
+    // INF or 0 that 1/x gives
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      rc = _mm512_rcp14_ps(ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      rc = _mm512_maskz_rcp14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnr
+  #if !defined(DISABLE_AVX2) // AVX2 invnr
+  __attribute__((__target__("avx2,fma")))
+  inline void invnr(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    // one newton-raphson stage, r - r*(x*r-1) for x = in and r = ~1/x.  Where
+    // x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1) makes it -1, so
+    // those lanes give r + r = 2r, which is still the INF or signed 0 that 1/x
+    // gives (max_ps returns its second operand for a NaN, and x*r-1 is never
+    // below -1 otherwise).  Without DAZ a denormal x gives NaN: rcp_ps treats
+    // it as 0, so r = INF and x*r-1 = INF
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnr
+  #if !defined(DISABLE_AVX) // AVX invnr
+  __attribute__((__target__("avx")))
+  inline void invnr(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    // one newton-raphson stage, r - r*(x*r-1) for x = in and r = ~1/x.  Where
+    // x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1) makes it -1, so
+    // those lanes give r + r = 2r, which is still the INF or signed 0 that 1/x
+    // gives (max_ps returns its second operand for a NaN, and x*r-1 is never
+    // below -1 otherwise).  Without DAZ a denormal x gives NaN: rcp_ps treats
+    // it as 0, so r = INF and x*r-1 = INF
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnr
+  // default
+  __attribute__((__target__("default")))
+  inline void invnr(float const * const in, const int len, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/in[i];
+    return;
+  }
+  
+  // 1/max(in, eps) with fast reciprocal approximation and 1 stage
+  // Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnr
+  __attribute__((__target__("avx512f")))
+  inline void invnr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    // one newton-raphson stage, r + r*(1-x*r) for x = max(in, eps) and
+    // r = ~1/x, applied only where 1-x*r > -1: x = 0 or INF make it NaN (and
+    // r = INF from a denormal x makes it -INF), and those lanes keep r, which
+    // is already the INF or 0 that 1/x gives
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_rcp14_ps(ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_maskz_rcp14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnr
+  #if !defined(DISABLE_AVX2) // AVX2 invnr
+  __attribute__((__target__("avx2,fma")))
+  inline void invnr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r - r*(x*r-1) for x = max(in, eps) and
+    // r = ~1/x.  Where x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1)
+    // makes it -1, so those lanes give r + r = 2r, which is still the INF or
+    // signed 0 that 1/x gives (max_ps returns its second operand for a NaN, and
+    // x*r-1 is never below -1 otherwise).  Without DAZ a denormal x gives NaN:
+    // rcp_ps treats it as 0, so r = INF and x*r-1 = INF
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnr
+  #if !defined(DISABLE_AVX) // AVX invnr
+  __attribute__((__target__("avx")))
+  inline void invnr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r - r*(x*r-1) for x = max(in, eps) and
+    // r = ~1/x.  Where x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1)
+    // makes it -1, so those lanes give r + r = 2r, which is still the INF or
+    // signed 0 that 1/x gives (max_ps returns its second operand for a NaN, and
+    // x*r-1 is never below -1 otherwise).  Without DAZ a denormal x gives NaN:
+    // rcp_ps treats it as 0, so r = INF and x*r-1 = INF
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnr
+  // default
+  __attribute__((__target__("default")))
+  inline void invnr(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/std::max(in[i], eps);
+    return;
+  }
+  
+  // scale/in
+  #if !defined(DISABLE_AVX512) // AVX512 invs
+  __attribute__((__target__("avx512f")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_div_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_maskz_div_ps(mk, sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invs
+  #if !defined(DISABLE_AVX) // AVX invs
+  __attribute__((__target__("avx")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invs
+  // default 
+  __attribute__((__target__("default")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/in[i];
+    return;
+  }
+  
+  // scale/max(in, eps)
+  #if !defined(DISABLE_AVX512) // AVX512 invs
+  __attribute__((__target__("avx512f")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_div_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_maskz_div_ps(mk, sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invs
+  #if !defined(DISABLE_AVX) // AVX invs
+  __attribute__((__target__("avx")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invs
+  // default 
+  __attribute__((__target__("default")))
+  inline void invs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/std::max(in[i], eps);
+    return;
+  }
+  
+  // scale/in with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invrs
+  __attribute__((__target__("avx512f")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_mul_ps(sc, _mm512_rcp14_ps(ld));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_mul_ps(sc, _mm512_maskz_rcp14_ps(mk, ld));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invrs
+  #if !defined(DISABLE_AVX) // AVX invrs
+  __attribute__((__target__("avx")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_mul_ps(sc, _mm256_rcp_ps(ld));
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_mul_ps(sc, _mm256_rcp_ps(ld));
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invrs
+  // default 
+  __attribute__((__target__("default")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/in[i];
+    return;
+  }
+  
+  // scale/max(in, eps) with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invrs
+  __attribute__((__target__("avx512f")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_mul_ps(sc, _mm512_rcp14_ps(ld));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_mul_ps(sc, _mm512_maskz_rcp14_ps(mk, ld));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invrs
+  #if !defined(DISABLE_AVX) // AVX invrs
+  __attribute__((__target__("avx")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_mul_ps(sc, _mm256_rcp_ps(ld));
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_mul_ps(sc, _mm256_rcp_ps(ld));
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invrs
+  // default 
+  __attribute__((__target__("default")))
+  inline void invrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/std::max(in[i], eps);
+    return;
+  }
+  
+  // scale/in with fast reciprocal approximation and 1 stage Newton-Raphson
+  // refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnrs
+  __attribute__((__target__("avx512f")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    const __m512 sc = _mm512_set1_ps(scale);
+    // one newton-raphson stage, r + r*(1-x*r) for x = in and r = ~1/x, applied
+    // only where 1-x*r > -1: x = 0 or INF make it NaN (and r = INF from a
+    // denormal x makes it -INF), and those lanes keep r, which is already the
+    // INF or 0 that 1/x gives
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      rc = _mm512_rcp14_ps(ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      rc = _mm512_maskz_rcp14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnrs
+  #if !defined(DISABLE_AVX2) // AVX2 invnrs
+  __attribute__((__target__("avx2,fma")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // one newton-raphson stage, r - r*(x*r-1) for x = in and r = ~1/x.  Where
+    // x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1) makes it -1, so
+    // those lanes give r + r = 2r, which is still the INF or signed 0 that 1/x
+    // gives (max_ps returns its second operand for a NaN, and x*r-1 is never
+    // below -1 otherwise).  Without DAZ a denormal x gives NaN: rcp_ps treats
+    // it as 0, so r = INF and x*r-1 = INF
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnrs
+  #if !defined(DISABLE_AVX) // AVX invnrs
+  __attribute__((__target__("avx")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // one newton-raphson stage, r - r*(x*r-1) for x = in and r = ~1/x.  Where
+    // x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1) makes it -1, so
+    // those lanes give r + r = 2r, which is still the INF or signed 0 that 1/x
+    // gives (max_ps returns its second operand for a NaN, and x*r-1 is never
+    // below -1 otherwise).  Without DAZ a denormal x gives NaN: rcp_ps treats
+    // it as 0, so r = INF and x*r-1 = INF
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnrs
+  // default
+  __attribute__((__target__("default")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/in[i];
+    return;
+  }
+  
+  // scale/max(in, eps) with fast reciprocal approximation and 1 stage
+  // Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnrs
+  __attribute__((__target__("avx512f")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    // one newton-raphson stage, r + r*(1-x*r) for x = max(in, eps) and
+    // r = ~1/x, applied only where 1-x*r > -1: x = 0 or INF make it NaN (and
+    // r = INF from a denormal x makes it -INF), and those lanes keep r, which
+    // is already the INF or 0 that 1/x gives
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_rcp14_ps(ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_maskz_rcp14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(ld, rc, one);       // 1-x*r
+      ld = _mm512_mask3_fmadd_ps(rc, err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnrs
+  #if !defined(DISABLE_AVX2) // AVX2 invnrs
+  __attribute__((__target__("avx2,fma")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r - r*(x*r-1) for x = max(in, eps) and
+    // r = ~1/x.  Where x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1)
+    // makes it -1, so those lanes give r + r = 2r, which is still the INF or
+    // signed 0 that 1/x gives (max_ps returns its second operand for a NaN, and
+    // x*r-1 is never below -1 otherwise).  Without DAZ a denormal x gives NaN:
+    // rcp_ps treats it as 0, so r = INF and x*r-1 = INF
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_fmsub_ps(ld, rc, one), negOne); // x*r-1
+      ld = _mm256_fnmadd_ps(rc, err, rc);       // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnrs
+  #if !defined(DISABLE_AVX) // AVX invnrs
+  __attribute__((__target__("avx")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 negOne = _mm256_set1_ps(-1.0f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r - r*(x*r-1) for x = max(in, eps) and
+    // r = ~1/x.  Where x = 0 or INF, x*r-1 is NaN (0*INF) and max(x*r-1, -1)
+    // makes it -1, so those lanes give r + r = 2r, which is still the INF or
+    // signed 0 that 1/x gives (max_ps returns its second operand for a NaN, and
+    // x*r-1 is never below -1 otherwise).  Without DAZ a denormal x gives NaN:
+    // rcp_ps treats it as 0, so r = INF and x*r-1 = INF
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rcp_ps(ld);
+      err = _mm256_max_ps(_mm256_sub_ps(_mm256_mul_ps(ld, rc), one),
+          negOne);                              // x*r-1
+      ld = _mm256_sub_ps(rc, _mm256_mul_ps(rc, err)); // r-r*(x*r-1)
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnrs
+  // default
+  __attribute__((__target__("default")))
+  inline void invnrs(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/std::max(in[i], eps);
+    return;
+  }
+  
+  // 1/sqrt(max(in, eps))
+  #if !defined(DISABLE_AVX512) // AVX512 invSqrt
+  __attribute__((__target__("avx512f")))
+  inline void invSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_sqrt_ps(ld);
+      ld = _mm512_div_ps(one, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_sqrt_ps(ld);
+      ld = _mm512_maskz_div_ps(mk, one, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invSqrt
+  #if !defined(DISABLE_AVX) // AVX invSqrt
+  __attribute__((__target__("avx")))
+  inline void invSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_sqrt_ps(ld);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_sqrt_ps(ld);
+      ld = _mm256_div_ps(one, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invSqrt
+  // default 
+  __attribute__((__target__("default")))
+  inline void invSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invSqrt(float const * const in, const int len, float * const out)
+  {
+    invSqrt(in, len, out, 0.0f);
+    return;
+  }
+  
+  // 1/sqrt(max(in, eps)) with fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invrSqrt
+  __attribute__((__target__("avx512f")))
+  inline void invrSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_rsqrt14_ps(ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_maskz_rsqrt14_ps(mk, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invrSqrt
+  #if !defined(DISABLE_AVX) // AVX invrSqrt
+  __attribute__((__target__("avx")))
+  inline void invrSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_rsqrt_ps(ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_rsqrt_ps(ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invrSqrt
+  // default 
+  __attribute__((__target__("default")))
+  inline void invrSqrt(float const * const in, const int len, float * const out,
+      const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invrSqrt(float const * const in, const int len,
+      float * const out)
+  {
+    invrSqrt(in, len, out, 0.0f);
+    return;
+  }
+  
+  // 1/sqrt(max(in, eps)) with fast reciprocal square root approximation
+  // and 1 stage Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnrSqrt
+  __attribute__((__target__("avx512f")))
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x), applied only where 1-x*r*r > -1: x = 0 or INF make it
+    // NaN, and those lanes keep r, which is already the INF or 0 that 1/sqrt(x)
+    // gives
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_rsqrt14_ps(ld);
+      err = _mm512_fnmadd_ps(_mm512_mul_ps(ld, rc), rc, one); // 1-x*r*r
+      ld = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, rc), err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_maskz_rsqrt14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(_mm512_mul_ps(ld, rc), rc, one); // 1-x*r*r
+      ld = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, rc), err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnrSqrt
+  #if !defined(DISABLE_AVX2) // AVX2 invnrSqrt
+  __attribute__((__target__("avx2,fma")))
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x).  Where x = 0 or INF, 1-x*r*r is NaN (0*INF) and
+    // min(1-x*r*r, 1) makes it 1, so those lanes give r + 0.5*r = 1.5r, which
+    // is still the INF or 0 that 1/sqrt(x) gives (min_ps returns its second
+    // operand for a NaN, and 1-x*r*r is never above 1 otherwise).  Without DAZ
+    // a denormal x gives NaN: rsqrt_ps treats it as 0
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_min_ps(_mm256_fnmadd_ps(_mm256_mul_ps(ld, rc), rc, one),
+          one);                                 // 1-x*r*r
+      ld = _mm256_fmadd_ps(_mm256_mul_ps(half, rc), err, rc);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_min_ps(_mm256_fnmadd_ps(_mm256_mul_ps(ld, rc), rc, one),
+          one);                                 // 1-x*r*r
+      ld = _mm256_fmadd_ps(_mm256_mul_ps(half, rc), err, rc);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnrSqrt
+  #if !defined(DISABLE_AVX) // AVX invnrSqrt
+  __attribute__((__target__("avx")))
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x).  Where x = 0 or INF, 1-x*r*r is NaN (0*INF) and
+    // min(1-x*r*r, 1) makes it 1, so those lanes give r + 0.5*r = 1.5r, which
+    // is still the INF or 0 that 1/sqrt(x) gives (min_ps returns its second
+    // operand for a NaN, and 1-x*r*r is never above 1 otherwise).  Without DAZ
+    // a denormal x gives NaN: rsqrt_ps treats it as 0
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_mul_ps(_mm256_mul_ps(ld, rc), rc); // x*r*r
+      err = _mm256_min_ps(_mm256_sub_ps(one, err), one); // 1-x*r*r
+      ld = _mm256_add_ps(rc, _mm256_mul_ps(_mm256_mul_ps(half, rc), err));
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_mul_ps(_mm256_mul_ps(ld, rc), rc); // x*r*r
+      err = _mm256_min_ps(_mm256_sub_ps(one, err), one); // 1-x*r*r
+      ld = _mm256_add_ps(rc, _mm256_mul_ps(_mm256_mul_ps(half, rc), err));
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnrSqrt
+  // default
+  __attribute__((__target__("default")))
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = 1.0f/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invnrSqrt(float const * const in, const int len,
+      float * const out)
+  {
+    invnrSqrt(in, len, out, 0.0f);
+    return;
+  }
+  
+  // scale/sqrt(max(in, eps))
+  #if !defined(DISABLE_AVX512) // AVX512 invSqrts
+  __attribute__((__target__("avx512f")))
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_sqrt_ps(ld);
+      ld = _mm512_div_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_sqrt_ps(ld);
+      ld = _mm512_maskz_div_ps(mk, sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invSqrts
+  #if !defined(DISABLE_AVX) // AVX invSqrts
+  __attribute__((__target__("avx")))
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_sqrt_ps(ld);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_sqrt_ps(ld);
+      ld = _mm256_div_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invSqrts
+  // default 
+  __attribute__((__target__("default")))
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invSqrts(float const * const in, const int len, const float scale,
+      float * const out)
+  {
+    invSqrts(in, len, scale, out, 0.0f);
+    return;
+  }
+  
+  // scale/sqrt(max(in, eps)) with fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 invrSqrts
+  __attribute__((__target__("avx512f")))
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_mul_ps(sc, _mm512_rsqrt14_ps(ld));
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      ld = _mm512_mul_ps(sc, _mm512_maskz_rsqrt14_ps(mk, ld));
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invrSqrts
+  #if !defined(DISABLE_AVX) // AVX invrSqrts
+  __attribute__((__target__("avx")))
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_mul_ps(sc, _mm256_rsqrt_ps(ld));
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      ld = _mm256_mul_ps(sc, _mm256_rsqrt_ps(ld));
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invrSqrts
+  // default 
+  __attribute__((__target__("default")))
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invrSqrts(float const * const in, const int len,
+      const float scale, float * const out)
+  {
+    invrSqrts(in, len, scale, out, 0.0f);
+    return;
+  }
+  
+  // scale/sqrt(max(in, eps)) with fast reciprocal square root
+  // approximation and 1 stage Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 invnrSqrts
+  __attribute__((__target__("avx512f")))
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld, rc, err;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x), applied only where 1-x*r*r > -1: x = 0 or INF make it
+    // NaN, and those lanes keep r, which is already the INF or 0 that 1/sqrt(x)
+    // gives
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_rsqrt14_ps(ld);
+      err = _mm512_fnmadd_ps(_mm512_mul_ps(ld, rc), rc, one); // 1-x*r*r
+      ld = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, rc), err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      ld = _mm512_max_ps(ep, ld);
+      rc = _mm512_maskz_rsqrt14_ps(mk, ld);
+      err = _mm512_fnmadd_ps(_mm512_mul_ps(ld, rc), rc, one); // 1-x*r*r
+      ld = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, rc), err, rc,
+          _mm512_cmp_ps_mask(err, negOne, _CMP_GT_OQ));
+      ld = _mm512_mul_ps(sc, ld);
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 invnrSqrts
+  #if !defined(DISABLE_AVX2) // AVX2 invnrSqrts
+  __attribute__((__target__("avx2,fma")))
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x).  Where x = 0 or INF, 1-x*r*r is NaN (0*INF) and
+    // min(1-x*r*r, 1) makes it 1, so those lanes give r + 0.5*r = 1.5r, which
+    // is still the INF or 0 that 1/sqrt(x) gives (min_ps returns its second
+    // operand for a NaN, and 1-x*r*r is never above 1 otherwise).  Without DAZ
+    // a denormal x gives NaN: rsqrt_ps treats it as 0
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_min_ps(_mm256_fnmadd_ps(_mm256_mul_ps(ld, rc), rc, one),
+          one);                                 // 1-x*r*r
+      ld = _mm256_fmadd_ps(_mm256_mul_ps(half, rc), err, rc);
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_min_ps(_mm256_fnmadd_ps(_mm256_mul_ps(ld, rc), rc, one),
+          one);                                 // 1-x*r*r
+      ld = _mm256_fmadd_ps(_mm256_mul_ps(half, rc), err, rc);
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 invnrSqrts
+  #if !defined(DISABLE_AVX) // AVX invnrSqrts
+  __attribute__((__target__("avx")))
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld, rc, err;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: max_ps returns the second operand on a tie or NaN, so in goes
+    // second to match std::max(in[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    // one newton-raphson stage, r + 0.5*r*(1-x*r*r) for x = max(in, eps) and
+    // r = ~1/sqrt(x).  Where x = 0 or INF, 1-x*r*r is NaN (0*INF) and
+    // min(1-x*r*r, 1) makes it 1, so those lanes give r + 0.5*r = 1.5r, which
+    // is still the INF or 0 that 1/sqrt(x) gives (min_ps returns its second
+    // operand for a NaN, and 1-x*r*r is never above 1 otherwise).  Without DAZ
+    // a denormal x gives NaN: rsqrt_ps treats it as 0
+    // scale then multiplies the refined value (refining scale*r directly would
+    // give the wrong sign of zero for a zero scale)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_mul_ps(_mm256_mul_ps(ld, rc), rc); // x*r*r
+      err = _mm256_min_ps(_mm256_sub_ps(one, err), one); // 1-x*r*r
+      ld = _mm256_add_ps(rc, _mm256_mul_ps(_mm256_mul_ps(half, rc), err));
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = _mm256_max_ps(ep, ld);
+      rc = _mm256_rsqrt_ps(ld);
+      err = _mm256_mul_ps(_mm256_mul_ps(ld, rc), rc); // x*r*r
+      err = _mm256_min_ps(_mm256_sub_ps(one, err), one); // 1-x*r*r
+      ld = _mm256_add_ps(rc, _mm256_mul_ps(_mm256_mul_ps(half, rc), err));
+      ld = _mm256_mul_ps(sc, ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX invnrSqrts
+  // default
+  __attribute__((__target__("default")))
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out, const float eps)
+  {
+    for(int i=0; i<len; ++i) out[i] = scale/sqrtf(std::max(in[i], eps));
+    return;
+  }
+  inline void invnrSqrts(float const * const in, const int len,
+      const float scale, float * const out)
+  {
+    invnrSqrts(in, len, scale, out, 0.0f);
+    return;
+  }
+
   //=====================================//
   // Dot-Product Function Implementation //
   //=====================================//
@@ -20747,56 +23075,48 @@ namespace EVM
       float * const out)
   {
     if(len<=0) return;
-    const int rem = len&15; // remaining elements (note len&15 == len%16)
-    __m512 ld1, ld2, re;
-    __m512i p1 = _mm512_setr_epi32(0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15);
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
     int i = 0;
-    // note: we process 2 registers worth of complex elements at once then
-    // compact the float result into a single register
-    if(len > 8)
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
     {
-      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
-      {
-        // load A and B (8 complex elements each)
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
-      }
-      if(rem > 8) // one full and one partial register
-      {
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_maskz_loadu_ps(mask16((rem-8)<<1), // 2 floats per complex
-            reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
-            mask16(rem), ld1);
-        return;
-      }
-      else if(!rem) return;
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      _mm512_storeu_ps(&out[i], ld1);
     }
-    // if we got here, there is one partial register left to complete
-    // each complex is 2 floats, so double rem
-    ld1 = _mm512_maskz_loadu_ps(mask16(rem<<1),
-        reinterpret_cast<float const *>(&in[i])); // A
-    ld1 = _mm512_mul_ps(ld1, ld1);
-    ld2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0^2,Ar0^2,...,Ai7^2,Ar7^2]
-    ld1 = _mm512_add_ps(ld1, ld2);
-    ld1 = _mm512_permutexvar_ps(_mm512_setr_epi32(0,2,4,6,8,10,12,14,1,3,5,
-        7,9,11,13,15), ld1);
-    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mask16(rem), ld1);
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
     return;
   }
   #endif // end AVX512 |complex|^2
@@ -21029,59 +23349,50 @@ namespace EVM
       float * const out)
   {
     if(len<=0) return;
-    const int rem = len&15; // remaining elements (note len&15 == len%16)
-    __m512 ld1, ld2, re;
-    __m512i p1 = _mm512_setr_epi32(0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15);
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
     int i = 0;
-    // note: we process 2 registers worth of complex elements at once then
-    // compact the float result into a single register
-    if(len > 8)
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
     {
-      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
-      {
-        // load A and B (8 complex elements each)
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        ld1 = _mm512_sqrt_ps(ld1);    // [|A0|,|A1|,|B0|,|B1|,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
-      }
-      if(rem > 8) // one full and one partial register
-      {
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_maskz_loadu_ps(mask16((rem-8)<<1), // 2 floats per complex
-            reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        ld1 = _mm512_sqrt_ps(ld1);    // [|A0|,|A1|,|B0|,|B1|,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
-            mask16(rem), ld1);
-        return;
-      }
-      else if(!rem) return;
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      _mm512_storeu_ps(&out[i], ld1);
     }
-    // if we got here, there is one partial register left to complete
-    // each complex is 2 floats, so double rem
-    ld1 = _mm512_maskz_loadu_ps(mask16(rem<<1),
-        reinterpret_cast<float const *>(&in[i])); // A
-    ld1 = _mm512_mul_ps(ld1, ld1);
-    ld2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0^2,Ar0^2,...,Ai7^2,Ar7^2]
-    ld1 = _mm512_add_ps(ld1, ld2);
-    ld1 = _mm512_sqrt_ps(ld1);
-    ld1 = _mm512_permutexvar_ps(_mm512_setr_epi32(0,2,4,6,8,10,12,14,1,3,5,
-        7,9,11,13,15), ld1);
-    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mask16(rem), ld1);
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
     return;
   }
   #endif // end AVX512 |complex|
@@ -21240,69 +23551,57 @@ namespace EVM
       float * const out)
   {
     if(len<=0) return;
-    const int rem = len&15; // remaining elements (note len&15 == len%16)
-    __m512 ld1, ld2, re;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
     // the rsqrt is zero-masked to the lanes where |in|^2 != 0, so |in| = 0
-    // gives 0*0 = 0 instead of 0*rsqrt(0) = 0*inf = NaN
-    __mmask16 nz;
+    // gives 0*0 = 0 instead of 0*rsqrt(0) = 0*inf = NaN (an overflowing
+    // |in|^2 still gives INF*0 = NaN, which the other paths give as INF;
+    // guarding it cost 4% with icpx)
     const __m512 zero = _mm512_setzero_ps();
-    __m512i p1 = _mm512_setr_epi32(0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15);
     int i = 0;
-    // note: we process 2 registers worth of complex elements at once then
-    // compact the float result into a single register
-    if(len > 8)
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
     {
-      for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
-      {
-        // load A and B (8 complex elements each)
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        nz = _mm512_cmp_ps_mask(ld1, zero, _CMP_NEQ_UQ); // |in|^2 != 0
-        ld2 = _mm512_maskz_rsqrt14_ps(nz, ld1); // [1/|A0|,1/|A1|,1/|B0|,...]
-        ld1 = _mm512_mul_ps(ld1,ld2);     // [|A0|,|A1|,|B0|,|B1|,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
-      }
-      if(rem > 8) // one full and one partial register
-      {
-        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
-        ld2 = _mm512_maskz_loadu_ps(mask16((rem-8)<<1), // 2 floats per complex
-            reinterpret_cast<float const *>(&in[i+8])); // B
-        // compute |A|^2 and |B|^2 and compress into 1 register
-        re = _mm512_shuffle_ps(ld1,ld2,0x88); // [Ar0,Ar1,Br0,Br1,...]
-        ld2 = _mm512_shuffle_ps(ld1,ld2,0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
-        ld2 = _mm512_mul_ps(ld2,ld2); // [Ai0^2,Ai1^2,Bi0^2,Bi1^2,...]
-        ld1 = _mm512_fmadd_ps(re,re,ld2); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
-        nz = _mm512_cmp_ps_mask(ld1, zero, _CMP_NEQ_UQ); // |in|^2 != 0
-        ld2 = _mm512_maskz_rsqrt14_ps(nz, ld1); // [1/|A0|,1/|A1|,1/|B0|,...]
-        ld1 = _mm512_mul_ps(ld1,ld2);     // [|A0|,|A1|,|B0|,|B1|,...]
-        // re-arrange pairs of output values to put all A before B
-        ld1 = _mm512_permutexvar_ps(p1, ld1);
-        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
-            mask16(rem), ld1);
-        return;
-      }
-      else if(!rem) return;
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rsqrt14_ps(
+          _mm512_cmp_ps_mask(ld1, zero, _CMP_NEQ_UQ), ld1)); // |in|
+      _mm512_storeu_ps(&out[i], ld1);
     }
-    // if we got here, there is one partial register left to complete
-    // each complex is 2 floats, so double rem
-    ld1 = _mm512_maskz_loadu_ps(mask16(rem<<1),
-        reinterpret_cast<float const *>(&in[i])); // A
-    ld1 = _mm512_mul_ps(ld1, ld1);
-    ld2 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0^2,Ar0^2,...,Ai7^2,Ar7^2]
-    ld1 = _mm512_add_ps(ld1, ld2);
-    nz = _mm512_cmp_ps_mask(ld1, zero, _CMP_NEQ_UQ); // |in|^2 != 0
-    ld2 = _mm512_maskz_rsqrt14_ps(nz, ld1);
-    ld1 = _mm512_mul_ps(ld1,ld2);
-    ld1 = _mm512_permutexvar_ps(_mm512_setr_epi32(0,2,4,6,8,10,12,14,1,3,5,
-        7,9,11,13,15), ld1);
-    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mask16(rem), ld1);
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rsqrt14_ps(
+          _mm512_cmp_ps_mask(ld1, zero, _CMP_NEQ_UQ), ld1)); // |in|
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
     return;
   }
   #endif // end AVX512 |complex| (rsqrt)
@@ -21462,8 +23761,3363 @@ namespace EVM
     {
       out[i] = sqrtf(in[i].real()*in[i].real()+in[i].imag()*in[i].imag());
     }
+    return;
   }
   
+  // in/|in|
+  #if !defined(DISABLE_AVX512) // AVX512 nmag
+  __attribute__((__target__("avx512f")))
+  inline void nmag(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im, sc;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem>8)
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk,
+          _mm512_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_setzero_ps();
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_div_ps(_mm512_cmp_ps_mask(sc, minMag, _CMP_GE_OQ),
+          one, _mm512_sqrt_ps(sc));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk,
+          _mm512_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX512 nmag
+  #if !defined(DISABLE_AVX) // AVX nmag
+  __attribute__((__target__("avx")))
+  inline void nmag(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im, sc;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem>4)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i+4]), msk);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk,
+          _mm256_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_div_ps(one, _mm256_sqrt_ps(sc)),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk,
+          _mm256_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX nmag
+  // default 
+  __attribute__((__target__("default")))
+  inline void nmag(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+      re = in[i].real();
+      im = in[i].imag();
+      // an element whose squared magnitude is below FLT_MIN (including 0)
+      // gives 0, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0f/sqrtf(sc) : 0.0f;
+      out[i].real(re*sc);
+      out[i].imag(im*sc);
+    }
+    return;
+  }
+  
+  // in/|in| with fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 nmagr
+  __attribute__((__target__("avx512f")))
+  inline void nmagr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im, sc;
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc);
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem>8)
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc);
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk,
+          _mm512_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_setzero_ps();
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc);
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk,
+          _mm512_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX512 nmagr
+  #if !defined(DISABLE_AVX) // AVX nmagr
+  __attribute__((__target__("avx")))
+  inline void nmagr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im, sc;
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem>4)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i+4]), msk);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk,
+          _mm256_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // 1/|in|, 0 for the elements that give 0
+      sc = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ));
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk,
+          _mm256_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX nmagr
+  // default 
+  __attribute__((__target__("default")))
+  inline void nmagr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+      re = in[i].real();
+      im = in[i].imag();
+      // an element whose squared magnitude is below FLT_MIN (including 0)
+      // gives 0, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0f/sqrtf(sc) : 0.0f;
+      out[i].real(re*sc);
+      out[i].imag(im*sc);
+    }
+    return;
+  }
+  
+  // in/|in| with fast reciprocal square root approximation and 1 stage
+  // Newton-Raphson refinement
+  #if !defined(DISABLE_AVX512) // AVX512 nmagnr
+  __attribute__((__target__("avx512f")))
+  inline void nmagnr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im, sc;
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 negOne = _mm512_set1_ps(-1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m512 minMag = _mm512_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-|in|^2*r*r), only where
+      // 1-|in|^2*r*r > -1: an overflowing |in|^2 makes it NaN, and
+      // those lanes keep r = 0
+      ld1 = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc); // r
+      ld2 = _mm512_fnmadd_ps(_mm512_mul_ps(sc, ld1), ld1, one);
+      sc = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, ld1), ld2, ld1,
+          _mm512_cmp_ps_mask(ld2, negOne, _CMP_GT_OQ));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem>8)
+    {
+      const __mmask16 mk = mask16((rem-8)<<1); // 2 floats per complex
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-|in|^2*r*r), only where
+      // 1-|in|^2*r*r > -1: an overflowing |in|^2 makes it NaN, and
+      // those lanes keep r = 0
+      ld1 = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc); // r
+      ld2 = _mm512_fnmadd_ps(_mm512_mul_ps(sc, ld1), ld1, one);
+      sc = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, ld1), ld2, ld1,
+          _mm512_cmp_ps_mask(ld2, negOne, _CMP_GT_OQ));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_unpacklo_ps(re, im));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk,
+          _mm512_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      const __mmask16 mk = mask16(rem<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mk,
+          reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_setzero_ps();
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-|in|^2*r*r), only where
+      // 1-|in|^2*r*r > -1: an overflowing |in|^2 makes it NaN, and
+      // those lanes keep r = 0
+      ld1 = _mm512_maskz_rsqrt14_ps(_mm512_cmp_ps_mask(sc, minMag,
+          _CMP_GE_OQ), sc); // r
+      ld2 = _mm512_fnmadd_ps(_mm512_mul_ps(sc, ld1), ld1, one);
+      sc = _mm512_mask3_fmadd_ps(_mm512_mul_ps(half, ld1), ld2, ld1,
+          _mm512_cmp_ps_mask(ld2, negOne, _CMP_GT_OQ));
+      re = _mm512_mul_ps(re, sc);
+      im = _mm512_mul_ps(im, sc);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk,
+          _mm512_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX512 nmagnr
+  #if !defined(DISABLE_AVX2) // AVX2 nmagnr
+  __attribute__((__target__("avx2,fma")))
+  inline void nmagnr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im, sc;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 maxMag = _mm256_set1_ps(FLT_MAX);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_min_ps(sc, maxMag),
+          ld1), ld1, one);
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem>4)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i+4]), msk);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_min_ps(sc, maxMag),
+          ld1), ld1, one);
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk,
+          _mm256_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_fnmadd_ps(_mm256_mul_ps(_mm256_min_ps(sc, maxMag),
+          ld1), ld1, one);
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk,
+          _mm256_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX2 nmagnr
+  #if !defined(DISABLE_AVX) // AVX nmagnr
+  __attribute__((__target__("avx")))
+  inline void nmagnr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im, sc;
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 maxMag = _mm256_set1_ps(FLT_MAX);
+    const __m256 half = _mm256_set1_ps(0.5f);
+    // elements whose squared magnitude is below FLT_MIN give 0: zeros
+    // (which would give 0*INF = NaN) and those too small to normalize
+    const __m256 minMag = _mm256_set1_ps(FLT_MIN);
+    int i = 0;
+    // note: 2 registers are split into a register of real parts and one of
+    // imaginary parts, so the squared magnitude and its scale are computed
+    // once per element.  Interleaving them again, unpacklo gives the
+    // elements of the first register and unpackhi those of the second
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_sub_ps(one, _mm256_mul_ps(
+          _mm256_mul_ps(_mm256_min_ps(sc, maxMag), ld1), ld1));
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(re, im));
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem>4)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i+4]), msk);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_sub_ps(one, _mm256_mul_ps(
+          _mm256_mul_ps(_mm256_min_ps(sc, maxMag), ld1), ld1));
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), msk,
+          _mm256_unpackhi_ps(re, im));
+    }
+    else if(rem)
+    {
+      // note msk accounts for 2 floats per complex
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(
+          reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      sc = _mm256_add_ps(_mm256_mul_ps(re, re),
+          _mm256_mul_ps(im, im)); // |in|^2
+      // r = ~1/|in| (0 where |in|^2 < FLT_MIN), refined with one
+      // newton-raphson stage, r + 0.5*r*(1-m*r*r) for m =
+      // min(|in|^2, FLT_MAX): where |in|^2 overflows r is 0 and the
+      // correction is 0 rather than INF*0 = NaN (cheaper than masking
+      // it)
+      ld1 = _mm256_and_ps(_mm256_rsqrt_ps(sc),
+          _mm256_cmp_ps(sc, minMag, _CMP_GE_OQ)); // r
+      ld2 = _mm256_sub_ps(one, _mm256_mul_ps(
+          _mm256_mul_ps(_mm256_min_ps(sc, maxMag), ld1), ld1));
+      ld2 = _mm256_mul_ps(_mm256_mul_ps(half, ld1), ld2);
+      sc = _mm256_add_ps(ld1, ld2);
+      re = _mm256_mul_ps(re, sc);
+      im = _mm256_mul_ps(im, sc);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk,
+          _mm256_unpacklo_ps(re, im));
+    }
+    return;
+  }
+  #endif // end AVX nmagnr
+  // default
+  __attribute__((__target__("default")))
+  inline void nmagnr(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    float re, im, sc;
+    for(int i=0; i<len; ++i)
+    {
+      re = in[i].real();
+      im = in[i].imag();
+      // an element whose squared magnitude is below FLT_MIN (including 0)
+      // gives 0, rather than 0*inf = NaN, as in the SIMD versions
+      sc = re*re+im*im;
+      sc = (sc >= FLT_MIN) ? 1.0f/sqrtf(sc) : 0.0f;
+      out[i].real(re*sc);
+      out[i].imag(im*sc);
+    }
+    return;
+  }
+  
+  // w1*|in| + w2*out
+  #if !defined(DISABLE_AVX512) // AVX512 magSum
+  __attribute__((__target__("avx512f")))
+  inline void magSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 wt1 = _mm512_set1_ps(w1);
+    const __m512 wt2 = _mm512_set1_ps(w2);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld2 = _mm512_loadu_ps(&out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld2 = _mm512_maskz_loadu_ps(mk, &out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSum
+  #if !defined(DISABLE_AVX) // AVX magSum
+  __attribute__((__target__("avx")))
+  inline void magSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 wt1 = _mm256_set1_ps(w1);
+    const __m256 wt2 = _mm256_set1_ps(w2);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld2 = _mm256_loadu_ps(&out[i]);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld2 = _mm256_maskload_ps(&out[i], msk);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSum
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    float mag;
+    for(int i=0; i<len; ++i)
+    {
+      mag = sqrtf(in[i].real()*in[i].real()+in[i].imag()*in[i].imag());
+      out[i] = w1*mag+w2*out[i];
+    }
+    return;
+  }
+  
+  // w1*|in| + w2*out with fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magrSum
+  __attribute__((__target__("avx512f")))
+  inline void magrSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 wt1 = _mm512_set1_ps(w1);
+    const __m512 wt2 = _mm512_set1_ps(w2);
+    // note: |in| is |in|^2*rsqrt(|in|^2), except where that is NaN:
+    // |in|^2 = 0 or INF (0*INF), which are already the magnitude
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_mul_ps(ld1, _mm512_rsqrt14_ps(ld1));
+      ld1 = _mm512_mask_mov_ps(ld1, _mm512_cmp_ps_mask(ld2, ld2,
+          _CMP_ORD_Q), ld2);
+      ld2 = _mm512_loadu_ps(&out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_mul_ps(ld1, _mm512_maskz_rsqrt14_ps(mk, ld1));
+      ld1 = _mm512_mask_mov_ps(ld1, _mm512_cmp_ps_mask(ld2, ld2,
+          _CMP_ORD_Q), ld2);
+      ld2 = _mm512_maskz_loadu_ps(mk, &out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magrSum
+  #if !defined(DISABLE_AVX2) // AVX2 magrSum
+  __attribute__((__target__("avx2,fma")))
+  inline void magrSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    const __m256 wt1 = _mm256_set1_ps(w1);
+    const __m256 wt2 = _mm256_set1_ps(w2);
+    // note: |in| is computed as rcp(rsqrt(|in|^2)) rather than
+    // |in|^2*rsqrt(|in|^2), so |in| = 0 gives rcp(INF) = 0 instead of
+    // 0*INF = NaN, at the same cost
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld2 = _mm256_loadu_ps(&out[i]);
+      ld1 = _mm256_fmadd_ps(wt1, ld1, _mm256_mul_ps(wt2, ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld2 = _mm256_maskload_ps(&out[i], msk);
+      ld1 = _mm256_fmadd_ps(wt1, ld1, _mm256_mul_ps(wt2, ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magrSum
+  #if !defined(DISABLE_AVX) // AVX magrSum
+  __attribute__((__target__("avx")))
+  inline void magrSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 wt1 = _mm256_set1_ps(w1);
+    const __m256 wt2 = _mm256_set1_ps(w2);
+    // note: |in| is computed as rcp(rsqrt(|in|^2)) rather than
+    // |in|^2*rsqrt(|in|^2), so |in| = 0 gives rcp(INF) = 0 instead of
+    // 0*INF = NaN, at the same cost
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld2 = _mm256_loadu_ps(&out[i]);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld2 = _mm256_maskload_ps(&out[i], msk);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magrSum
+  // default 
+  __attribute__((__target__("default")))
+  inline void magrSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    float mag;
+    for(int i=0; i<len; ++i)
+    {
+      mag = sqrtf(in[i].real()*in[i].real()+in[i].imag()*in[i].imag());
+      out[i] = w1*mag+w2*out[i];
+    }
+    return;
+  }
+  
+  // |in| + bias
+  #if !defined(DISABLE_AVX512) // AVX512 magBias
+  __attribute__((__target__("avx512f")))
+  inline void magBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 bs = _mm512_set1_ps(bias);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld1 = _mm512_add_ps(ld1, bs);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld1 = _mm512_sqrt_ps(ld1);
+      ld1 = _mm512_add_ps(ld1, bs);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magBias
+  #if !defined(DISABLE_AVX) // AVX magBias
+  __attribute__((__target__("avx")))
+  inline void magBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 bs = _mm256_set1_ps(bias);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_sqrt_ps(ld1);
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magBias
+  // default 
+  __attribute__((__target__("default")))
+  inline void magBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    float mag;
+    for(int i=0; i<len; ++i)
+    {
+      mag = sqrtf(in[i].real()*in[i].real()+in[i].imag()*in[i].imag());
+      out[i] = mag+bias;
+    }
+    return;
+  }
+  
+  // |in| + bias with fast reciprocal square root approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magrBias
+  __attribute__((__target__("avx512f")))
+  inline void magrBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 bs = _mm512_set1_ps(bias);
+    // note: |in| is |in|^2*r with r = rsqrt(|in|^2) where 0 < |in|^2 < INF
+    // and r = 1 elsewhere, since 0, INF and NaN are already the magnitude
+    // (0*rsqrt(0) and INF*rsqrt(INF) would be NaN).  Keeping |in|^2 with a
+    // masked move after the multiply instead cost 19%: the move can take
+    // the port the multiplies need, while compares only use the other one
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 zero = _mm512_setzero_ps();
+    const __m512 inf = _mm512_set1_ps(INFINITY);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_mask_rsqrt14_ps(one, _mm512_mask_cmp_ps_mask(
+          _mm512_cmp_ps_mask(ld1, zero, _CMP_GT_OQ), ld1, inf, _CMP_LT_OQ),
+          ld1); // r
+      ld1 = _mm512_fmadd_ps(ld1, ld2, bs); // |in|+bias
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_mask_rsqrt14_ps(one, _mm512_mask_cmp_ps_mask(
+          _mm512_cmp_ps_mask(ld1, zero, _CMP_GT_OQ), ld1, inf, _CMP_LT_OQ),
+          ld1); // r
+      ld1 = _mm512_fmadd_ps(ld1, ld2, bs); // |in|+bias
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magrBias
+  #if !defined(DISABLE_AVX2) // AVX2 magrBias
+  __attribute__((__target__("avx2,fma")))
+  inline void magrBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    const __m256 bs = _mm256_set1_ps(bias);
+    // note: |in| is computed as rcp(rsqrt(|in|^2)) rather than
+    // |in|^2*rsqrt(|in|^2), so |in| = 0 gives rcp(INF) = 0 instead of
+    // 0*INF = NaN, at the same cost
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magrBias
+  #if !defined(DISABLE_AVX) // AVX magrBias
+  __attribute__((__target__("avx")))
+  inline void magrBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 bs = _mm256_set1_ps(bias);
+    // note: |in| is computed as rcp(rsqrt(|in|^2)) rather than
+    // |in|^2*rsqrt(|in|^2), so |in| = 0 gives rcp(INF) = 0 instead of
+    // 0*INF = NaN, at the same cost
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld1 = _mm256_rcp_ps(_mm256_rsqrt_ps(ld1));
+      ld1 = _mm256_add_ps(ld1, bs);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magrBias
+  // default 
+  __attribute__((__target__("default")))
+  inline void magrBias(complex<float> const * const in, const int len,
+      float * const out, const float bias)
+  {
+    float mag;
+    for(int i=0; i<len; ++i)
+    {
+      mag = sqrtf(in[i].real()*in[i].real()+in[i].imag()*in[i].imag());
+      out[i] = mag+bias;
+    }
+    return;
+  }
+  
+  
+  // w1*|in|^2 + w2*out
+  #if !defined(DISABLE_AVX512) // AVX512 magSqSum
+  __attribute__((__target__("avx512f")))
+  inline void magSqSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 wt1 = _mm512_set1_ps(w1);
+    const __m512 wt2 = _mm512_set1_ps(w2);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &out[i]);
+      ld1 = _mm512_fmadd_ps(wt1, ld1, _mm512_mul_ps(wt2, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqSum
+  #if !defined(DISABLE_AVX2) // AVX2 magSqSum
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    const __m256 wt1 = _mm256_set1_ps(w1);
+    const __m256 wt2 = _mm256_set1_ps(w2);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_loadu_ps(&out[i]);
+      ld1 = _mm256_fmadd_ps(wt1, ld1, _mm256_mul_ps(wt2, ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_maskload_ps(&out[i], msk);
+      ld1 = _mm256_fmadd_ps(wt1, ld1, _mm256_mul_ps(wt2, ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqSum
+  #if !defined(DISABLE_AVX) // AVX magSqSum
+  __attribute__((__target__("avx")))
+  inline void magSqSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 wt1 = _mm256_set1_ps(w1);
+    const __m256 wt2 = _mm256_set1_ps(w2);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&out[i]);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&out[i], msk);
+      ld1 = _mm256_add_ps(_mm256_mul_ps(wt1, ld1), _mm256_mul_ps(wt2, ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqSum
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqSum(complex<float> const * const in, const int len,
+      float * const out, const float w1, const float w2)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in[i].real()*in[i].real()+in[i].imag()*in[i].imag();
+      out[i] = w1*mag2+w2*out[i];
+    }
+    return;
+  }
+  
+  // |complex|^2 * real
+  #if !defined(DISABLE_AVX512) // AVX512 magSqMult
+  __attribute__((__target__("avx512f")))
+  inline void magSqMult(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqMult
+  #if !defined(DISABLE_AVX2) // AVX2 magSqMult
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqMult(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqMult
+  #if !defined(DISABLE_AVX) // AVX magSqMult
+  __attribute__((__target__("avx")))
+  inline void magSqMult(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqMult
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqMult(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2*in2[i];
+    }
+    return;
+  }
+  
+  // |real|^2 * real
+  #if !defined(DISABLE_AVX512) // AVX512 magSqMult
+  __attribute__((__target__("avx512f")))
+  inline void magSqMult(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqMult
+  #if !defined(DISABLE_AVX) // AVX magSqMult
+  __attribute__((__target__("avx")))
+  inline void magSqMult(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqMult
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqMult(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2*in2[i];
+    }
+    return;
+  }
+  
+  // |complex|^2 * real * scale
+  #if !defined(DISABLE_AVX512) // AVX512 magSqMults
+  __attribute__((__target__("avx512f")))
+  inline void magSqMults(complex<float> const * const in1,
+      float const * const in2, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    const __m512 sc = _mm512_set1_ps(scale);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(_mm512_mul_ps(ld1, ld2), sc);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(_mm512_mul_ps(ld1, ld2), sc);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqMults
+  #if !defined(DISABLE_AVX2) // AVX2 magSqMults
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqMults(complex<float> const * const in1,
+      float const * const in2, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqMults
+  #if !defined(DISABLE_AVX) // AVX magSqMults
+  __attribute__((__target__("avx")))
+  inline void magSqMults(complex<float> const * const in1,
+      float const * const in2, const int len, const float scale,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqMults
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqMults(complex<float> const * const in1,
+      float const * const in2, const int len, const float scale,
+      float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2*in2[i]*scale;
+    }
+    return;
+  }
+  
+  // |real|^2 * real * scale
+  #if !defined(DISABLE_AVX512) // AVX512 magSqMults
+  __attribute__((__target__("avx512f")))
+  inline void magSqMults(float const * const in1, float const * const in2,
+      const int len, const float scale, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    const __m512 sc = _mm512_set1_ps(scale);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(_mm512_mul_ps(ld1, ld2), sc);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(_mm512_mul_ps(ld1, ld2), sc);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqMults
+  #if !defined(DISABLE_AVX) // AVX magSqMults
+  __attribute__((__target__("avx")))
+  inline void magSqMults(float const * const in1, float const * const in2,
+      const int len, const float scale, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(_mm256_mul_ps(ld1, ld2), sc);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqMults
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqMults(float const * const in1, float const * const in2,
+      const int len, const float scale, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2*in2[i]*scale;
+    }
+    return;
+  }
+  
+  // |complex|^2 / real
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDiv
+  __attribute__((__target__("avx512f")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDiv
+  #if !defined(DISABLE_AVX) // AVX magSqDiv
+  __attribute__((__target__("avx")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDiv
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2/in2[i];
+    }
+    return;
+  }
+  
+  // |float|^2 / real
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDiv
+  __attribute__((__target__("avx512f")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDiv
+  #if !defined(DISABLE_AVX) // AVX magSqDiv
+  __attribute__((__target__("avx")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDiv
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2/in2[i];
+    }
+    return;
+  }
+  
+  // |complex|^2 / max(real, eps)
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDiv
+  __attribute__((__target__("avx512f")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDiv
+  #if !defined(DISABLE_AVX) // AVX magSqDiv
+  __attribute__((__target__("avx")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDiv
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDiv(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2/std::max(in2[i], eps);
+    }
+    return;
+  }
+  
+  // |real|^2 / max(real, eps)
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDiv
+  __attribute__((__target__("avx512f")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_div_ps(ld1, ld2);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_maskz_div_ps(mk, ld1, ld2);
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDiv
+  #if !defined(DISABLE_AVX) // AVX magSqDiv
+  __attribute__((__target__("avx")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_div_ps(ld1, ld2);
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDiv
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDiv(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2/std::max(in2[i], eps);
+    }
+    return;
+  }
+
+  // |complex|^2 / real with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDivr
+  __attribute__((__target__("avx512f")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDivr
+  #if !defined(DISABLE_AVX2) // AVX2 magSqDivr
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqDivr
+  #if !defined(DISABLE_AVX) // AVX magSqDivr
+  __attribute__((__target__("avx")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDivr
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2/in2[i];
+    }
+    return;
+  }
+
+  // |float|^2 / real with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDivr
+  __attribute__((__target__("avx512f")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDivr
+  #if !defined(DISABLE_AVX) // AVX magSqDivr
+  __attribute__((__target__("avx")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDivr
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2/in2[i];
+    }
+    return;
+  }
+  
+  // |complex|^2 / max(real, eps) with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDivr
+  __attribute__((__target__("avx512f")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDivr
+  #if !defined(DISABLE_AVX2) // AVX2 magSqDivr
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqDivr
+  #if !defined(DISABLE_AVX) // AVX magSqDivr
+  __attribute__((__target__("avx")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDivr
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDivr(complex<float> const * const in1,
+      float const * const in2, const int len, float * const out,
+      const float eps)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i].real()*in1[i].real()+in1[i].imag()*in1[i].imag();
+      out[i] = mag2/std::max(in2[i], eps);
+    }
+    return;
+  }
+  
+  // |real|^2 / max(real, eps) with fast reciprocal approximation
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDivr
+  __attribute__((__target__("avx512f")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m512 ep = _mm512_set1_ps(eps);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_rcp14_ps(ld2));
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm512_max_ps(ep, ld2);
+      ld1 = _mm512_mul_ps(ld1, _mm512_maskz_rcp14_ps(mk, ld2));
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDivr
+  #if !defined(DISABLE_AVX) // AVX magSqDivr
+  __attribute__((__target__("avx")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2;
+    // note: max_ps returns the second operand on a tie or NaN, so in2 goes
+    // second to match std::max(in2[i], eps) in the default version
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_mul_ps(ld1, ld1); // |in1|^2
+      ld2 = _mm256_max_ps(ep, ld2);
+      ld1 = _mm256_mul_ps(ld1, _mm256_rcp_ps(ld2));
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDivr
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDivr(float const * const in1, float const * const in2,
+      const int len, float * const out, const float eps)
+  {
+    float mag2;
+    for(int i=0; i<len; ++i)
+    {
+      mag2 = in1[i]*in1[i];
+      out[i] = mag2/std::max(in2[i], eps);
+    }
+    return;
+  }
+
+  // |in1-in2|^2
+  #if !defined(DISABLE_AVX512) // AVX512 magSqDiff
+  __attribute__((__target__("avx512f")))
+  inline void magSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    int i = 0;
+    for(; i<len-15; i+=16) // process 2 registers (16 complex elements)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ld1 = _mm512_sub_ps(ld1,
+          _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+      ld2 = _mm512_sub_ps(ld2,
+          _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8])));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16), the second
+    // register is 0 if 8 or fewer remain
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      if(rem>8)
+      {
+        const __mmask16 mk2 = mask16((rem-8)<<1); // 2 floats per complex
+        ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i+8]));
+        ld1 = _mm512_sub_ps(ld1,
+            _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+        ld2 = _mm512_sub_ps(ld2, _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in2[i+8])));
+      }
+      else
+      {
+        const __mmask16 mk2 = mask16(rem<<1); // 2 floats per complex
+        ld1 = _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm512_setzero_ps();
+        ld1 = _mm512_sub_ps(ld1, _mm512_maskz_loadu_ps(mk2,
+            reinterpret_cast<float const *>(&in2[i])));
+      }
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = _mm512_fmadd_ps(re, re, _mm512_mul_ps(im, im)); // |in|^2
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 magSqDiff
+  #if !defined(DISABLE_AVX2) // AVX2 magSqDiff
+  __attribute__((__target__("avx2,fma")))
+  inline void magSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // index to put the pairs of results back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_sub_ps(ld1,
+          _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+      ld2 = _mm256_sub_ps(ld2,
+          _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4])));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+        ld1 = _mm256_sub_ps(ld1,
+            _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+        ld2 = _mm256_sub_ps(ld2, _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in2[i+4]), msk2));
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+        ld1 = _mm256_sub_ps(ld1, _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in2[i]), msk2));
+      }
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = _mm256_fmadd_ps(re, re, _mm256_mul_ps(im, im)); // |in|^2
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // back in element order
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 magSqDiff
+  #if !defined(DISABLE_AVX) // AVX magSqDiff
+  __attribute__((__target__("avx")))
+  inline void magSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 2 registers (8 complex elements)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ld1 = _mm256_sub_ps(ld1,
+          _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+      ld2 = _mm256_sub_ps(ld2,
+          _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4])));
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8), the second
+    // register is 0 if 4 or fewer remain
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      if(rem>4)
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[(rem-4)<<1]));
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+        ld2 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i+4]), msk2);
+        ld1 = _mm256_sub_ps(ld1,
+            _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i])));
+        ld2 = _mm256_sub_ps(ld2, _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in2[i+4]), msk2));
+      }
+      else
+      {
+        // note msk2 accounts for 2 floats per complex
+        const __m256i msk2 = _mm256_load_si256(
+            reinterpret_cast<__m256i const *>(masks[rem<<1]));
+        ld1 = _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in1[i]), msk2);
+        ld2 = _mm256_setzero_ps();
+        ld1 = _mm256_sub_ps(ld1, _mm256_maskload_ps(
+            reinterpret_cast<float const *>(&in2[i]), msk2));
+      }
+      // regroup the 128-bit halves as [A0,A1,B0,B1] and [A2,A3,B2,B3] so
+      // the shuffles give the parts in element order
+      re = _mm256_permute2f128_ps(ld1, ld2, 0x20);
+      im = _mm256_permute2f128_ps(ld1, ld2, 0x31);
+      ld1 = _mm256_shuffle_ps(re, im, 0x88); // real parts
+      ld2 = _mm256_shuffle_ps(re, im, 0xdd); // imaginary parts
+      ld1 = _mm256_add_ps(_mm256_mul_ps(ld1, ld1),
+          _mm256_mul_ps(ld2, ld2)); // |in|^2
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX magSqDiff
+  // default 
+  __attribute__((__target__("default")))
+  inline void magSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out)
+  {
+    float re, im;
+    for(int i=0; i<len; ++i)
+    {
+      re = in1[i].real()-in2[i].real();
+      im = in1[i].imag()-in2[i].imag();
+      out[i] = re*re+im*im;
+    }
+    return;
+  }
+
   //============================================================//
   // Unit/Coordinate System Conversion Function Implementations //
   //============================================================//

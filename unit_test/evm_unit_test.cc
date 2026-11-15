@@ -402,12 +402,16 @@ static int gTests = 0, gFailed = 0;
 // |in1*in2| + |in3|: its result can cancel to near zero, where the rounding
 // error of the product is large next to the result but not next to the terms
 // (the dot-products are measured the same way).
+//
+// overComplex = false leaves out mode 3 (below) for the functions that add
+// to the output buffer, which may not be on top of the complex input.
 //==============================================================================
 template<class TA, class TB, class TO, class FEVM, class FREF,
          class FMAG = std::nullptr_t>
 static void check(const char* name, const double tol,
                   const TA* const aBuf, const TB* const bBuf,
-                  FEVM runEvm, FREF baseline, FMAG magnitude = nullptr)
+                  FEVM runEvm, FREF baseline, FMAG magnitude = nullptr,
+                  const bool overComplex = true)
 {
   ++gTests;
   const bool cplx = IsComplex<TO>::value;
@@ -432,7 +436,7 @@ static void check(const char* name, const double tol,
   {
     if(mode == 1 && !std::is_same<TA, TO>::value) continue;
     if(mode == 2 && (!std::is_same<TB, TO>::value || bBuf == NULL)) continue;
-    if(mode == 3 && !cplxToReal) continue;
+    if(mode == 3 && (!cplxToReal || !overComplex)) continue;
     const char* modeName = (mode==0) ? "" :
                            (mode==1) ? " [in-place on in1]" :
                            (mode==2) ? " [in-place on in2]" :
@@ -565,6 +569,9 @@ static void check(const char* name, const double tol,
 //                           left untouched
 //   conjB                   true for the conjugate dot-products, whose
 //                           baseline uses conj(b[k])
+//   revB                    true for the reversed dot-products (dotpRev,
+//                           dotpcRev), whose baseline pairs a[k] with
+//                           b[len-1-k]
 //
 // The baseline is the double precision sum of a[k]*b[k].  Summed in float in
 // any order, each component of the result is within (m+1)*2^-24 times the sum
@@ -574,12 +581,14 @@ static void check(const char* name, const double tol,
 // against that magnitude sum rather than the result, which cancellation can
 // bring near zero.  The inputs are copied into NaN-filled buffers, in2 one
 // element off in1's alignment, so a read past the end shows up as a NaN
-// result.  Negative and zero lengths must give exactly 0.
+// result (for the reversed ones, a read before the start of in2 too, since
+// the element before it is NaN as well).  Negative and zero lengths must give
+// exactly 0.
 //==============================================================================
 template<class TA, class TB, class FEVM>
 static void checkDot(const char* name, const TA* const aBuf,
                      const TB* const bBuf, FEVM runEvm,
-                     const bool conjB = false)
+                     const bool conjB = false, const bool revB = false)
 {
   typedef decltype(TA()*TB()) T;       // result type
   ++gTests;
@@ -615,7 +624,8 @@ static void checkDot(const char* name, const TA* const aBuf,
     for(int k=0; k<valid; ++k)
     {
       const cdbl x = toCdbl(aBuf[k]);
-      const cdbl y = conjB ? std::conj(toCdbl(bBuf[k])) : toCdbl(bBuf[k]);
+      const cdbl z = toCdbl(bBuf[revB ? valid-1-k : k]);
+      const cdbl y = conjB ? std::conj(z) : z;
       want  += x*y;
       absRe += std::fabs(x.real()*y.real()) + std::fabs(x.imag()*y.imag());
       absIm += std::fabs(x.real()*y.imag()) + std::fabs(x.imag()*y.real());
@@ -661,6 +671,111 @@ static void checkDot(const char* name, const TA* const aBuf,
   printf("  %-34s %s  [%ld values, tol (%slen+1)*2^-24, worst rel %.3e",
          name, pass ? "PASS" : "FAIL", compared, (terms == 2) ? "2*" : "",
          worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
+}
+
+//==============================================================================
+// Normalized dot-product test driver (dotpn, dotpnr, dotpcn, dotpcnr)
+//
+//   runEvm(a, b, len, res)  as for checkDot()
+//   conjB                   true for dotpcn/dotpcnr, whose products use
+//                           conj(b[k])
+//   tol                     error allowed in each normalized product
+//                           (TOL_EXACT, or TOL_RCP for the approximations)
+//
+// The baseline is the double precision sum of p/|p| over the products
+// p = a[k]*b[k], skipping those whose squared magnitude is below FLT_MIN (a
+// zero product adds nothing).  Each term has magnitude 1, so the error of each
+// component is measured against the number of terms n: the bound is
+// tol + (len+1)*2^-24 times n, the error of each term plus that of summing
+// them in float.  The inputs are copied into NaN-filled buffers as for
+// checkDot(), so a read past the end shows up as a NaN result.  Negative and
+// zero lengths must give exactly 0.
+//==============================================================================
+template<class FEVM>
+static void checkDotN(const char* name, const complex<float>* const aBuf,
+                      const complex<float>* const bBuf, FEVM runEvm,
+                      const bool conjB, const double tol)
+{
+  ++gTests;
+  const double u = std::ldexp(1.0, -24);
+  std::vector<complex<float> > a(MAXLEN + GUARD);
+  std::vector<complex<float> > b(MAXLEN + GUARD);
+
+  long   compared = 0;
+  int    nbad = 0, nshown = 0, nstray = 0;
+  double worstRel = 0.0;
+
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len   = gLengths[li];
+    const int valid = (len > 0) ? len : 0;
+
+    for(int k=0; k<MAXLEN+GUARD; ++k)
+    {
+      a[k] = sentinel<complex<float> >();
+      b[k] = sentinel<complex<float> >();
+    }
+    for(int k=0; k<valid; ++k) { a[k] = aBuf[k]; b[k+1] = bBuf[k]; }
+    complex<float> res[2] = {sentinel<complex<float> >(),
+                             sentinel<complex<float> >()};
+    runEvm(a.data(), b.data()+1, len, res);
+    const cdbl got = toCdbl(res[0]);
+
+    // baseline and the number of terms
+    cdbl want = 0.0;
+    int  terms = 0;
+    for(int k=0; k<valid; ++k)
+    {
+      const cdbl y = conjB ? std::conj(toCdbl(bBuf[k])) : toCdbl(bBuf[k]);
+      const cdbl p = toCdbl(aBuf[k])*y;
+      const double m2 = std::norm(p);
+      if(m2 >= FLT_MIN) { want += p/std::sqrt(m2); ++terms; }
+    }
+    const double scale = (terms > 0) ? terms : 1.0;
+    const double bound = tol + (valid + 1)*u;
+    const double rdiff = std::max(std::fabs(got.real() - want.real()),
+                                  std::fabs(got.imag() - want.imag()))/scale;
+    ++compared;
+
+    // --- writes past the single result ---
+    if(!isSentinel(res[1]))
+    {
+      ++nstray;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        printf("      len=%-5d WROTE PAST THE RESULT evm=%s\n", len,
+               format(toCdbl(res[1]), true).c_str());
+      }
+    }
+
+    // --- value (NaN fails both tests) ---
+    if((valid > 0) ? (rdiff <= bound) : (got == cdbl(0.0, 0.0)))
+    {
+      if(rdiff > worstRel) worstRel = rdiff;
+      continue;
+    }
+    ++nbad;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d evm=%s baseline=%s reldiff=%.6g "
+             "(of %d terms, tol %.3g)\n", len, format(got, true).c_str(),
+             format(want, true).c_str(), rdiff, terms, bound);
+    }
+  }
+
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, tol %.0e+(len+1)*2^-24, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, tol, worstRel);
   if(nbad)   printf(", %d wrong", nbad);
   if(nstray) printf(", %d past end", nstray);
   printf("]\n");
@@ -1444,6 +1559,338 @@ static void checkPolarSpecial(const char* name, const float* const re,
     printf("      ... %d further problems not shown\n", nbad - nshown);
 }
 
+
+//==============================================================================
+// Special values for the inversion functions
+//
+//   runEvm(in, len, out, useEps, scale)  calls the function under test, with
+//                                        eps = GEPS if useEps (the square
+//                                        roots without it use eps = 0) and
+//                                        scale for the scaled ones
+//
+// Zeros of both signs, infinities, NaN, +-1, the largest and smallest normal
+// floats and a few large and small values go through every lane position,
+// including the partial last register, at lengths 1 to 40, with and without
+// eps, and for the scaled functions with scale = gSf and -0.  The expected
+// results follow the rules of 1/x and 1/sqrt(x) rather than arithmetic on
+// infinities: NaN or a negative square root gives NaN, a zero gives an
+// infinity and an infinity a zero, of the right signs, and a zero scale times
+// an infinity gives NaN.  These must match exactly (bit tests, since icpx's
+// fast math may drop NaN checks).  A result below FLT_MIN may come out as a
+// zero of the same sign (rcp_ps always flushes it, and so does FTZ);
+// otherwise the error must be within tol.  Denormal inputs are included for
+// the true versions, and for the approximations only under DAZ, where every
+// path sees them as zero: without it, AVX/AVX2 rcp_ps and rsqrt_ps still
+// treat them as zero (giving INF) while AVX-512 and the defaults do not.
+//==============================================================================
+static uint32_t floatBits(const float v)
+{
+  uint32_t b;
+  std::memcpy(&b, &v, sizeof(b));
+  return b;
+}
+static bool bitsNan(const float v)
+{
+  return (floatBits(v) & 0x7fffffffu) > 0x7f800000u;
+}
+static bool bitsInf(const float v)
+{
+  return (floatBits(v) & 0x7fffffffu) == 0x7f800000u;
+}
+static bool bitsZero(const float v)
+{
+  return (floatBits(v) & 0x7fffffffu) == 0;
+}
+static bool bitsNeg(const float v)
+{
+  return (floatBits(v) >> 31) != 0;
+}
+static bool bitsDenormal(const float v)
+{
+  const uint32_t m = floatBits(v) & 0x7fffffffu;
+  return m != 0 && m < 0x00800000u;
+}
+
+// expected result: kind 0 = finite value, 1 = NaN, 2 = infinity, 3 = zero
+struct InvWant { int kind; bool neg; double val; };
+
+static InvWant invWant(float x, const bool sqrtForm, const bool useEps,
+                       const bool scaled, const float scale, const bool daz)
+{
+  // std::max(x, eps), which keeps a NaN x
+  if(useEps || sqrtForm)
+  {
+    const float e = useEps ? GEPS : 0.0f;
+    if(!bitsNan(x) && x < e) x = e;
+  }
+  if(daz && bitsDenormal(x)) x = bitsNeg(x) ? -0.0f : 0.0f;
+  InvWant w = {0, false, 0.0};
+  if(bitsNan(x) || (sqrtForm && bitsNeg(x) && !bitsZero(x)))
+  {
+    w.kind = 1;
+    return w;
+  }
+  if(bitsZero(x))     { w.kind = 2; w.neg = bitsNeg(x); }
+  else if(bitsInf(x)) { w.kind = 3; w.neg = bitsNeg(x); }
+  else
+  {
+    w.val = sqrtForm ? 1.0/std::sqrt(static_cast<double>(x))
+                     : 1.0/static_cast<double>(x);
+  }
+  if(scaled)
+  {
+    if(w.kind == 2 && bitsZero(scale)) w.kind = 1;
+    else if(w.kind != 0) w.neg = (w.neg != bitsNeg(scale));
+    else if(bitsZero(scale))
+    {
+      w.kind = 3;
+      w.neg = ((w.val < 0) != bitsNeg(scale));
+    }
+    else w.val *= scale;
+  }
+  // a finite result too large for a float (1/x of a small denormal)
+  if(w.kind == 0 && std::fabs(w.val) > std::numeric_limits<float>::max())
+  {
+    w.kind = 2;
+    w.neg = w.val < 0;
+  }
+  return w;
+}
+
+template<class FEVM>
+static void checkInvSpecial(const char* name, const double tol,
+                            const bool approx, const bool sqrtForm,
+                            const bool scaled, FEVM runEvm)
+{
+  ++gTests;
+  const bool daz = (_mm_getcsr() & _MM_DENORMALS_ZERO_MASK) ==
+                   _MM_DENORMALS_ZERO_ON;
+  const float fmax = std::numeric_limits<float>::max();
+  const float fmin = std::numeric_limits<float>::min();
+  std::vector<float> vals = {0.0f, -0.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(), 1.0f, -1.0f, 0.5f, -2.0f,
+      fmax, -fmax, fmin, -fmin, 1.0e30f, -3.0e-30f, 3.0f};
+  if(!approx || daz)
+  {
+    vals.push_back(std::numeric_limits<float>::denorm_min());
+    vals.push_back(-3.0e-39f);
+    vals.push_back(1.0e-38f);
+  }
+  const int nv = static_cast<int>(vals.size());
+  const float scales[2] = {gSf, -0.0f};
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  std::vector<float> in(64), out(64);
+  for(int useEps=0; useEps<2; ++useEps)
+  for(int si=0; si<(scaled ? 2 : 1); ++si)
+  for(int len=1; len<=40; ++len)
+  {
+    for(int i=0; i<len; ++i) in[i] = vals[(i + len)%nv];
+    runEvm(in.data(), len, out.data(), useEps != 0, scales[si]);
+    for(int i=0; i<len; ++i)
+    {
+      const InvWant w = invWant(in[i], sqrtForm, useEps != 0, scaled,
+                                scales[si], daz);
+      const float g = out[i];
+      bool ok;
+      ++compared;
+      if(w.kind == 1)      ok = bitsNan(g);
+      else if(w.kind == 2) ok = bitsInf(g) && bitsNeg(g) == w.neg;
+      else if(w.kind == 3) ok = bitsZero(g) && bitsNeg(g) == w.neg;
+      else if(std::fabs(w.val) < fmin && bitsZero(g))
+        ok = (bitsNeg(g) == (w.val < 0));
+      else
+        ok = !bitsNan(g) && !bitsInf(g) &&
+             std::fabs(g - w.val)/std::max(std::fabs(w.val),
+                                           static_cast<double>(fmin)) <= tol;
+      if(ok) continue;
+      ++nbad;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        char want[32];
+        if(w.kind == 0) snprintf(want, sizeof(want), "%.9g", w.val);
+        else snprintf(want, sizeof(want), "%s%s", w.kind == 1 ? "" :
+                      (w.neg ? "-" : "+"), w.kind == 1 ? "NaN" :
+                      (w.kind == 2 ? "INF" : "0"));
+        printf("      len=%-3d in=%-13g%s%s evm=%-13g want=%s\n", len, in[i],
+               useEps ? " eps" : "", (scaled && si) ? " scale=-0" : "", g,
+               want);
+      }
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, NaN/INF/0 exact", name,
+         pass ? "PASS" : "FAIL", compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// Special values for the magnitude functions
+//
+//   runEvm(in, len, out, cout)  calls the function under test, which writes
+//                               its real results to out (out holds 1 before
+//                               the call, for the sums) or its complex ones
+//                               to cout
+//
+// kind says what the function computes from M = |in|: MS_SQ |in|^2, MS_MAG
+// M, MS_NORM in/M, MS_BIAS M + 0.5, MS_SUM 0.75*M + 0.25*out.  Zeros of all
+// four signs, ordinary values, values whose squared magnitude underflows,
+// is a denormal or overflows, infinities, NaN and denormal parts go through
+// every lane position, including the partial last register, at lengths 1 to
+// 40.  The expected results follow rules rather than arithmetic on
+// infinities: a NaN part gives NaN, an infinite part or an overflowing
+// |in|^2 gives M = INF, and |in|^2 = 0 gives M = 0 exactly.  A denormal
+// |in|^2 may give M = 0 (FTZ, and AVX/AVX2 rsqrt_ps without DAZ) or its
+// square root, to within the rounding of the denormal (about 2^-149 of
+// |in|^2).  The normalizations give 0 wherever |in|^2 is below FLT_MIN,
+// INF or NaN: each part becomes a zero of its own sign, or NaN where it is
+// NaN or INF.  NaN, infinities and those zeros must match exactly (bit tests,
+// since icpx's fast math may drop NaN checks); otherwise the error must be
+// within tol (for the normalizations, of 1).  Under DAZ, denormal parts act
+// as zeros of the same sign.  infMayBeNaN lets a magnitude of INF come out as
+// NaN instead: magr's AVX-512 version doesn't guard against an overflowing
+// |in|^2 (INF*rsqrt14(INF) = INF*0), which is kept for speed.
+//==============================================================================
+enum MagSpecialKind { MS_SQ, MS_MAG, MS_NORM, MS_BIAS, MS_SUM };
+
+// expected value of one real result: kind as in InvWant (0 = finite value,
+// 1 = NaN, 2 = INF, 3 = zero), tiny = a denormal |in|^2 that may also give 0
+struct MagWant { int kind; bool neg; double val; bool tiny; };
+
+template<class FEVM>
+static void checkMagSpecial(const char* name, const double tol,
+                            const MagSpecialKind kind, FEVM runEvm,
+                            const bool infMayBeNaN = false)
+{
+  ++gTests;
+  const bool daz = (_mm_getcsr() & _MM_DENORMALS_ZERO_MASK) ==
+                   _MM_DENORMALS_ZERO_ON;
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float fmin = std::numeric_limits<float>::min();
+  const float fmax = std::numeric_limits<float>::max();
+  const complex<float> vals[] = {
+      complex<float>(0.0f, 0.0f), complex<float>(-0.0f, 0.0f),
+      complex<float>(0.0f, -0.0f), complex<float>(-0.0f, -0.0f),
+      complex<float>(1.0f, -1.0f), complex<float>(-3.0f, 4.0f),
+      complex<float>(0.5f, 0.0f), complex<float>(0.0f, -2.0f),
+      complex<float>(1.0e-25f, 0.0f), complex<float>(-1.0e-25f, 3.0e-26f),
+      complex<float>(1.0e-20f, 1.0e-20f), complex<float>(5.0e-20f, 0.0f),
+      complex<float>(2.0e-18f, -1.0e-18f), complex<float>(1.0e19f, 1.0e19f),
+      complex<float>(2.0e19f, 0.0f), complex<float>(-3.0e19f, 1.0f),
+      complex<float>(inf, 1.0f), complex<float>(1.0f, -inf),
+      complex<float>(-inf, -inf), complex<float>(nan, 1.0f),
+      complex<float>(1.0f, nan), complex<float>(1.0e-40f, 0.0f),
+      complex<float>(-1.0e-40f, -2.0f)};
+  const int nv = sizeof(vals)/sizeof(vals[0]);
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  std::vector<complex<float> > in(64), cout(64);
+  std::vector<float> out(64);
+  for(int len=1; len<=40; ++len)
+  {
+    for(int i=0; i<len; ++i)
+    {
+      in[i] = vals[(i + len)%nv];
+      out[i] = 1.0f;
+    }
+    runEvm(in.data(), len, out.data(), cout.data());
+    for(int i=0; i<len; ++i)
+    {
+      // the input as the kernels see it
+      float re = in[i].real(), im = in[i].imag();
+      if(daz && bitsDenormal(re)) re = bitsNeg(re) ? -0.0f : 0.0f;
+      if(daz && bitsDenormal(im)) im = bitsNeg(im) ? -0.0f : 0.0f;
+      const double m = static_cast<double>(re)*re + static_cast<double>(im)*im;
+      // M = |in| as the functions see it
+      MagWant w = {0, false, 0.0, false};
+      if(bitsNan(re) || bitsNan(im)) w.kind = 1;
+      else if(bitsInf(re) || bitsInf(im) || m > fmax) w.kind = 2;
+      else if(static_cast<float>(m) == 0.0f) w.kind = 3;
+      else
+      {
+        w.val = (kind == MS_SQ) ? m : std::sqrt(m);
+        w.tiny = m < fmin;
+      }
+      const bool zeroScale = (w.kind != 0) || w.tiny;
+      bool ok[2] = {true, true};
+      float got[2] = {out[i], 0.0f};
+      if(kind == MS_NORM)
+      {
+        got[0] = cout[i].real();
+        got[1] = cout[i].imag();
+        const float part[2] = {re, im};
+        for(int c=0; c<2; ++c)
+        {
+          if(zeroScale)
+          {
+            if(bitsNan(part[c]) || bitsInf(part[c])) ok[c] = bitsNan(got[c]);
+            else
+              ok[c] = bitsZero(got[c]) && bitsNeg(got[c]) == bitsNeg(part[c]);
+          }
+          else
+            ok[c] = !bitsNan(got[c]) && !bitsInf(got[c]) &&
+                    std::fabs(got[c] - part[c]/w.val) <= tol;
+        }
+      }
+      else
+      {
+        // the bias and the sum on top of M
+        double add = 0.0, mul = 1.0;
+        if(kind == MS_BIAS) add = 0.5;
+        if(kind == MS_SUM) { mul = 0.75; add = 0.25; }
+        const float g = got[0];
+        if(w.kind == 1) ok[0] = bitsNan(g);
+        else if(w.kind == 2)
+          ok[0] = (bitsInf(g) && !bitsNeg(g)) || (infMayBeNaN && bitsNan(g));
+        else
+        {
+          const double want = mul*w.val + add;
+          // a denormal |in|^2 carries only absolute precision (about 2^-149
+          // after its rounding), which its square root scales by 1/(2*M)
+          const double extra = (w.tiny && kind != MS_SQ) ?
+              mul*3.0e-45/(2.0*w.val) : 0.0;
+          if(w.kind == 3 && add == 0.0) ok[0] = bitsZero(g) && !bitsNeg(g);
+          else if(w.tiny && add == 0.0 && bitsZero(g) && !bitsNeg(g))
+            ok[0] = true;
+          else
+            ok[0] = !bitsNan(g) && !bitsInf(g) &&
+                    std::fabs(g - want) <=
+                        tol*std::max(want, static_cast<double>(fmin)) + extra;
+        }
+      }
+      ++compared;
+      if(ok[0] && ok[1]) continue;
+      ++nbad;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        if(kind == MS_NORM)
+          printf("      len=%-3d in=(%g,%g) evm=(%.9g,%.9g)\n", len,
+                 in[i].real(), in[i].imag(), got[0], got[1]);
+        else
+          printf("      len=%-3d in=(%g,%g) evm=%.9g\n", len, in[i].real(),
+                 in[i].imag(), got[0]);
+      }
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, NaN/INF/0 exact", name,
+         pass ? "PASS" : "FAIL", compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
 //==============================================================================
 int main(int argc, char** argv)
 {
@@ -1966,6 +2413,230 @@ int main(int argc, char** argv)
     [](int k)
       { return toCdbl(gAc[k]) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
 
+  //--- inv / invr / invnr / invs / invrs / invnrs : scale/max(in, eps) ----
+  // the inputs are the divisors gBf, scale is gSf
+  printf("\ninv / invr / invnr / invs / invrs / invnrs\n");
+  check<float, float, float>("inv(float)", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::inv(a, n, o); },
+    [](int k){ return cdbl(1.0) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("inv(float) eps", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::inv(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  check<float, float, float>("invr(float)", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invr(a, n, o); },
+    [](int k){ return cdbl(1.0) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("invr(float) eps", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invr(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  check<float, float, float>("invnr(float)", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnr(a, n, o); },
+    [](int k){ return cdbl(1.0) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("invnr(float) eps", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnr(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  check<float, float, float>("invs(float)", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invs(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("invs(float) eps", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invs(a, n, gSf, o, GEPS); },
+    [](int k){ return toCdbl(gSf) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  check<float, float, float>("invrs(float)", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrs(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("invrs(float) eps", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrs(a, n, gSf, o, GEPS); },
+    [](int k){ return toCdbl(gSf) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  check<float, float, float>("invnrs(float)", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrs(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / toCdbl(gBf[k]); });
+
+  check<float, float, float>("invnrs(float) eps", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrs(a, n, gSf, o, GEPS); },
+    [](int k){ return toCdbl(gSf) / toCdbl(std::max(gBf[k], GEPS)); });
+
+  //--- invSqrt / invrSqrt / invnrSqrt / invSqrts / invrSqrts / invnrSqrts --
+  // out = scale/sqrt(max(in, eps))
+  // eps defaults to 0, those runs use the positive divisors gPf
+  printf("\ninvSqrt / invrSqrt / invnrSqrt / invSqrts / invrSqrts / "
+         "invnrSqrts\n");
+  check<float, float, float>("invSqrt(float)", TOL_EXACT, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invSqrt(a, n, o); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invSqrt(float) eps", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invSqrt(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<float, float, float>("invrSqrt(float)", TOL_RCP, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrSqrt(a, n, o); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invrSqrt(float) eps", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrSqrt(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<float, float, float>("invnrSqrt(float)", TOL_NR, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrSqrt(a, n, o); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invnrSqrt(float) eps", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrSqrt(a, n, o, GEPS); },
+    [](int k){ return cdbl(1.0) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<float, float, float>("invSqrts(float)", TOL_EXACT, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invSqrts(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invSqrts(float) eps", TOL_EXACT, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invSqrts(a, n, gSf, o, GEPS); },
+    [](int k)
+      { return toCdbl(gSf) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<float, float, float>("invrSqrts(float)", TOL_RCP, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrSqrts(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invrSqrts(float) eps", TOL_RCP, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invrSqrts(a, n, gSf, o, GEPS); },
+    [](int k)
+      { return toCdbl(gSf) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  check<float, float, float>("invnrSqrts(float)", TOL_NR, gPf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrSqrts(a, n, gSf, o); },
+    [](int k){ return toCdbl(gSf) / std::sqrt(toCdbl(gPf[k])); });
+
+  check<float, float, float>("invnrSqrts(float) eps", TOL_NR, Bf, nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::invnrSqrts(a, n, gSf, o, GEPS); },
+    [](int k)
+      { return toCdbl(gSf) / std::sqrt(toCdbl(std::max(gBf[k], GEPS))); });
+
+  //--- inversion special values -------------------------------------------
+  // icpx's fast math turns 1.0f/sqrtf(x) in the default versions into an
+  // rsqrt approximation and a Newton-Raphson step, which gives NaN for 0 and
+  // INF, so the square roots are only checked on the SIMD paths with icpx
+  printf("\ninversion special values\n");
+  {
+    const std::string lvl = EVM::getOptLevel();
+#if defined(__INTEL_LLVM_COMPILER)
+    const bool sqrtSpecial = (lvl == "AVX512" || lvl == "AVX2" ||
+                              lvl == "AVX");
+#else
+    const bool sqrtSpecial = true;
+#endif
+    checkInvSpecial("inv(float) special", TOL_EXACT, false, false, false,
+      [](const float* a, int n, float* o, bool e, float)
+      {
+        if(e) EVM::inv(a, n, o, GEPS);
+        else  EVM::inv(a, n, o);
+      });
+    checkInvSpecial("invr(float) special", TOL_RCP, true, false, false,
+      [](const float* a, int n, float* o, bool e, float)
+      {
+        if(e) EVM::invr(a, n, o, GEPS);
+        else  EVM::invr(a, n, o);
+      });
+    checkInvSpecial("invnr(float) special", TOL_NR, true, false, false,
+      [](const float* a, int n, float* o, bool e, float)
+      {
+        if(e) EVM::invnr(a, n, o, GEPS);
+        else  EVM::invnr(a, n, o);
+      });
+    checkInvSpecial("invs(float) special", TOL_EXACT, false, false, true,
+      [](const float* a, int n, float* o, bool e, float s)
+      {
+        if(e) EVM::invs(a, n, s, o, GEPS);
+        else  EVM::invs(a, n, s, o);
+      });
+    checkInvSpecial("invrs(float) special", TOL_RCP, true, false, true,
+      [](const float* a, int n, float* o, bool e, float s)
+      {
+        if(e) EVM::invrs(a, n, s, o, GEPS);
+        else  EVM::invrs(a, n, s, o);
+      });
+    checkInvSpecial("invnrs(float) special", TOL_NR, true, false, true,
+      [](const float* a, int n, float* o, bool e, float s)
+      {
+        if(e) EVM::invnrs(a, n, s, o, GEPS);
+        else  EVM::invnrs(a, n, s, o);
+      });
+    if(sqrtSpecial)
+    {
+      checkInvSpecial("invSqrt(float) special", TOL_EXACT, false, true, false,
+        [](const float* a, int n, float* o, bool e, float)
+        {
+          if(e) EVM::invSqrt(a, n, o, GEPS);
+          else  EVM::invSqrt(a, n, o);
+        });
+      checkInvSpecial("invrSqrt(float) special", TOL_RCP, true, true, false,
+        [](const float* a, int n, float* o, bool e, float)
+        {
+          if(e) EVM::invrSqrt(a, n, o, GEPS);
+          else  EVM::invrSqrt(a, n, o);
+        });
+      checkInvSpecial("invnrSqrt(float) special", TOL_NR, true, true, false,
+        [](const float* a, int n, float* o, bool e, float)
+        {
+          if(e) EVM::invnrSqrt(a, n, o, GEPS);
+          else  EVM::invnrSqrt(a, n, o);
+        });
+      checkInvSpecial("invSqrts(float) special", TOL_EXACT, false, true, true,
+        [](const float* a, int n, float* o, bool e, float s)
+        {
+          if(e) EVM::invSqrts(a, n, s, o, GEPS);
+          else  EVM::invSqrts(a, n, s, o);
+        });
+      checkInvSpecial("invrSqrts(float) special", TOL_RCP, true, true, true,
+        [](const float* a, int n, float* o, bool e, float s)
+        {
+          if(e) EVM::invrSqrts(a, n, s, o, GEPS);
+          else  EVM::invrSqrts(a, n, s, o);
+        });
+      checkInvSpecial("invnrSqrts(float) special", TOL_NR, true, true, true,
+        [](const float* a, int n, float* o, bool e, float s)
+        {
+          if(e) EVM::invnrSqrts(a, n, s, o, GEPS);
+          else  EVM::invnrSqrts(a, n, s, o);
+        });
+    }
+    else
+      printf("  %-34s skipped (icpx default versions)\n",
+             "invSqrt ... invnrSqrts special");
+  }
+
   //--- dotp : sum of in1 * in2 ----------------------------------------------
   // the reference versions write the result to out, the by-value wrappers
   // return it
@@ -2011,6 +2682,102 @@ int main(int argc, char** argv)
   checkDot("dotpc(float,complex) by value", Af, Bc,
     [](const float* a, const complex<float>* b, int n, complex<float>* r)
       { r[0] = EVM::dotpc(a, b, n); }, true);
+
+  //--- dotpRev : sum of in1[k] * in2[len-1-k] -------------------------------
+  printf("\ndotpRev  (second input reversed)\n");
+  checkDot("dotpRev(float,float)", Af, Bf,
+    [](const float* a, const float* b, int n, float* r)
+      { EVM::dotpRev(a, b, n, r[0]); }, false, true);
+
+  checkDot("dotpRev(float,float) by value", Af, Bf,
+    [](const float* a, const float* b, int n, float* r)
+      { r[0] = EVM::dotpRev(a, b, n); }, false, true);
+
+  checkDot("dotpRev(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpRev(a, b, n, r[0]); }, false, true);
+
+  checkDot("dotpRev(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpRev(a, b, n); }, false, true);
+
+  checkDot("dotpRev(float,complex)", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { EVM::dotpRev(a, b, n, r[0]); }, false, true);
+
+  checkDot("dotpRev(float,complex) by value", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { r[0] = EVM::dotpRev(a, b, n); }, false, true);
+
+  //--- dotpcRev : sum of in1[k] * conj(in2[len-1-k]) ------------------------
+  printf("\ndotpcRev  (second input conjugated and reversed)\n");
+  checkDot("dotpcRev(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpcRev(a, b, n, r[0]); }, true, true);
+
+  checkDot("dotpcRev(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpcRev(a, b, n); }, true, true);
+
+  checkDot("dotpcRev(float,complex)", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { EVM::dotpcRev(a, b, n, r[0]); }, true, true);
+
+  checkDot("dotpcRev(float,complex) by value", Af, Bc,
+    [](const float* a, const complex<float>* b, int n, complex<float>* r)
+      { r[0] = EVM::dotpcRev(a, b, n); }, true, true);
+
+  //--- dotpn / dotpnr / dotpcn / dotpcnr : sum of p/|p|, p = in1*in2 -------
+  // (in2 conjugated for dotpcn/dotpcnr).  Each also runs with zeros in every
+  // third element of in1 (gZc), whose products must add nothing
+  printf("\ndotpn / dotpnr / dotpcn / dotpcnr  (each product normalized)\n");
+  checkDotN("dotpn(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpn(a, b, n, r[0]); }, false, TOL_EXACT);
+
+  checkDotN("dotpn(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpn(a, b, n); }, false, TOL_EXACT);
+
+  checkDotN("dotpn(complex,complex) zeros", Zc, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpn(a, b, n, r[0]); }, false, TOL_EXACT);
+
+  checkDotN("dotpnr(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpnr(a, b, n, r[0]); }, false, TOL_RCP);
+
+  checkDotN("dotpnr(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpnr(a, b, n); }, false, TOL_RCP);
+
+  checkDotN("dotpnr(complex,complex) zeros", Zc, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpnr(a, b, n, r[0]); }, false, TOL_RCP);
+
+  checkDotN("dotpcn(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpcn(a, b, n, r[0]); }, true, TOL_EXACT);
+
+  checkDotN("dotpcn(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpcn(a, b, n); }, true, TOL_EXACT);
+
+  checkDotN("dotpcn(complex,complex) zeros", Zc, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpcn(a, b, n, r[0]); }, true, TOL_EXACT);
+
+  checkDotN("dotpcnr(complex,complex)", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpcnr(a, b, n, r[0]); }, true, TOL_RCP);
+
+  checkDotN("dotpcnr(complex,complex) by value", Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { r[0] = EVM::dotpcnr(a, b, n); }, true, TOL_RCP);
+
+  checkDotN("dotpcnr(complex,complex) zeros", Zc, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n,
+       complex<float>* r) { EVM::dotpcnr(a, b, n, r[0]); }, true, TOL_RCP);
 
   //--- pow2 / pow4 / pow8 : out = in^2, in^4, in^8 --------------------------
   printf("\npow2 / pow4 / pow8\n");
@@ -2072,6 +2839,306 @@ int main(int argc, char** argv)
     [](const complex<float>* a, const float*, int n, float* o)
       { EVM::magr(a, n, o); },
     [](int k){ return cdbl(std::abs(toCdbl(gZc[k]))); });
+
+  //--- nmag / nmagr / nmagnr : out = in/|in| --------------------------------
+  // run on gZc: an element whose squared magnitude is below FLT_MIN gives 0
+  printf("\nnmag / nmagr / nmagnr\n");
+  check<complex<float>, float, complex<float> >("nmag(complex)", TOL_EXACT,
+    Zc, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::nmag(a, n, o); },
+    [](int k)
+    {
+      const cdbl z = toCdbl(gZc[k]);
+      return (std::norm(z) >= FLT_MIN) ? z/std::abs(z) : cdbl(0.0);
+    });
+
+  check<complex<float>, float, complex<float> >("nmagr(complex)", TOL_RCP,
+    Zc, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::nmagr(a, n, o); },
+    [](int k)
+    {
+      const cdbl z = toCdbl(gZc[k]);
+      return (std::norm(z) >= FLT_MIN) ? z/std::abs(z) : cdbl(0.0);
+    });
+
+  check<complex<float>, float, complex<float> >("nmagnr(complex)", TOL_NR,
+    Zc, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::nmagnr(a, n, o); },
+    [](int k)
+    {
+      const cdbl z = toCdbl(gZc[k]);
+      return (std::norm(z) >= FLT_MIN) ? z/std::abs(z) : cdbl(0.0);
+    });
+
+  //--- magSum / magrSum / magSqSum : out = w1*|in|(^2) + w2*out --------------
+  // in2 holds the values out starts with (copied in by the lambda, so "in
+  // place on in2" is the plain case again); the error is measured against
+  // |w1|*|in|(^2) + |w2*out| since the sum can cancel.  out may not be on top
+  // of the complex input, so that mode is left out
+  printf("\nmagSum / magrSum / magSqSum\n");
+  {
+    const float w1 = gSf, w2 = 1.0f - 0.5f*gSf;
+    check<complex<float>, float, float>("magSum(complex)", TOL_EXACT, Zc, Af,
+      [w1, w2](const complex<float>* a, const float* b, int n, float* o)
+      {
+        for(int k=0; k<n; ++k) o[k] = b[k];
+        EVM::magSum(a, n, o, w1, w2);
+      },
+      [w1, w2](int k)
+      {
+        return cdbl(w1*std::abs(toCdbl(gZc[k])) +
+                    w2*static_cast<double>(gAf[k]));
+      },
+      [w1, w2](int k)
+      {
+        return std::fabs(w1)*std::abs(toCdbl(gZc[k])) +
+               std::fabs(w2*static_cast<double>(gAf[k]));
+      }, false);
+
+    check<complex<float>, float, float>("magrSum(complex)", TOL_RCP, Zc, Af,
+      [w1, w2](const complex<float>* a, const float* b, int n, float* o)
+      {
+        for(int k=0; k<n; ++k) o[k] = b[k];
+        EVM::magrSum(a, n, o, w1, w2);
+      },
+      [w1, w2](int k)
+      {
+        return cdbl(w1*std::abs(toCdbl(gZc[k])) +
+                    w2*static_cast<double>(gAf[k]));
+      },
+      [w1, w2](int k)
+      {
+        return std::fabs(w1)*std::abs(toCdbl(gZc[k])) +
+               std::fabs(w2*static_cast<double>(gAf[k]));
+      }, false);
+
+    check<complex<float>, float, float>("magSqSum(complex)", TOL_EXACT, Zc, Af,
+      [w1, w2](const complex<float>* a, const float* b, int n, float* o)
+      {
+        for(int k=0; k<n; ++k) o[k] = b[k];
+        EVM::magSqSum(a, n, o, w1, w2);
+      },
+      [w1, w2](int k)
+      {
+        return cdbl(w1*std::norm(toCdbl(gZc[k])) +
+                    w2*static_cast<double>(gAf[k]));
+      },
+      [w1, w2](int k)
+      {
+        return std::fabs(w1)*std::norm(toCdbl(gZc[k])) +
+               std::fabs(w2*static_cast<double>(gAf[k]));
+      }, false);
+
+  }
+
+  //--- magBias / magrBias : out = |in| + bias --------------------------------
+  // the error is measured against |in| + |bias|, since a negative bias can
+  // cancel the magnitude
+  printf("\nmagBias / magrBias\n");
+  check<complex<float>, float, float>("magBias(complex)", TOL_EXACT, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, float* o)
+      { EVM::magBias(a, n, o, gSf); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k])) + gSf); },
+    [](int k){ return std::abs(toCdbl(gZc[k])) + std::fabs(gSf); });
+
+  check<complex<float>, float, float>("magrBias(complex)", TOL_RCP, Zc, nullF,
+    [](const complex<float>* a, const float*, int n, float* o)
+      { EVM::magrBias(a, n, o, gSf); },
+    [](int k){ return cdbl(std::abs(toCdbl(gZc[k])) + gSf); },
+    [](int k){ return std::abs(toCdbl(gZc[k])) + std::fabs(gSf); });
+
+  //--- magSqMult / magSqMults : out = |in1|^2 * in2 (* scale) ----------------
+  printf("\nmagSqMult / magSqMults\n");
+  check<complex<float>, float, float>("magSqMult(complex,float)", TOL_EXACT,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqMult(a, b, n, o); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) * toCdbl(gBf[k]);
+    });
+
+  check<float, float, float>("magSqMult(float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqMult(a, b, n, o); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) * toCdbl(gBf[k]);
+    });
+
+  check<complex<float>, float, float>("magSqMults(complex,float)", TOL_EXACT,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqMults(a, b, n, gSf, o); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) * toCdbl(gBf[k]) *
+             toCdbl(gSf);
+    });
+
+  check<float, float, float>("magSqMults(float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqMults(a, b, n, gSf, o); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) * toCdbl(gBf[k]) *
+             toCdbl(gSf);
+    });
+
+  //--- magSqDiv / magSqDivr : out = |in1|^2 / max(in2, eps) ------------------
+  printf("\nmagSqDiv / magSqDivr\n");
+  check<complex<float>, float, float>("magSqDiv(complex,float)", TOL_EXACT,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqDiv(a, b, n, o); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) /
+             toCdbl(gBf[k]);
+    });
+
+  check<float, float, float>("magSqDiv(float,float)", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqDiv(a, b, n, o); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) /
+             toCdbl(gBf[k]);
+    });
+
+  check<complex<float>, float, float>("magSqDiv(complex,float) eps", TOL_EXACT,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqDiv(a, b, n, o, GEPS); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) /
+             toCdbl(std::max(gBf[k], GEPS));
+    });
+
+  check<float, float, float>("magSqDiv(float,float) eps", TOL_EXACT, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqDiv(a, b, n, o, GEPS); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) /
+             toCdbl(std::max(gBf[k], GEPS));
+    });
+
+  check<complex<float>, float, float>("magSqDivr(complex,float)", TOL_RCP,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqDivr(a, b, n, o); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) /
+             toCdbl(gBf[k]);
+    });
+
+  check<float, float, float>("magSqDivr(float,float)", TOL_RCP, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqDivr(a, b, n, o); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) /
+             toCdbl(gBf[k]);
+    });
+
+  check<complex<float>, float, float>("magSqDivr(complex,float) eps", TOL_RCP,
+    Ac, Bf,
+    [](const complex<float>* a, const float* b, int n, float* o)
+      { EVM::magSqDivr(a, b, n, o, GEPS); },
+    [](int k)
+    {
+      return cdbl(std::norm(toCdbl(gAc[k]))) /
+             toCdbl(std::max(gBf[k], GEPS));
+    });
+
+  check<float, float, float>("magSqDivr(float,float) eps", TOL_RCP, Af, Bf,
+    [](const float* a, const float* b, int n, float* o)
+      { EVM::magSqDivr(a, b, n, o, GEPS); },
+    [](int k)
+    {
+      return toCdbl(gAf[k]) * toCdbl(gAf[k]) /
+             toCdbl(std::max(gBf[k], GEPS));
+    });
+
+  //--- magSqDiff : out = |in1 - in2|^2 ---------------------------------------
+  // the second run swaps the inputs, so its in-place mode puts out on top of
+  // in2.  The error is measured against |in1|^2 + |in2|^2, since the
+  // difference can cancel
+  printf("\nmagSqDiff\n");
+  check<complex<float>, complex<float>, float>("magSqDiff(complex,complex)",
+    TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, float* o)
+      { EVM::magSqDiff(a, b, n, o); },
+    [](int k){ return cdbl(std::norm(toCdbl(gAc[k]) - toCdbl(gBc[k]))); },
+    [](int k)
+      { return std::norm(toCdbl(gAc[k])) + std::norm(toCdbl(gBc[k])); });
+
+  check<complex<float>, complex<float>, float>(
+    "magSqDiff(complex,complex) a=in2", TOL_EXACT, Ac, Bc,
+    [](const complex<float>* a, const complex<float>* b, int n, float* o)
+      { EVM::magSqDiff(b, a, n, o); },
+    [](int k){ return cdbl(std::norm(toCdbl(gAc[k]) - toCdbl(gBc[k]))); },
+    [](int k)
+      { return std::norm(toCdbl(gAc[k])) + std::norm(toCdbl(gBc[k])); });
+
+  //--- magnitude special values -------------------------------------------
+  // icpx's fast math turns 1.0f/sqrtf(x) in the default versions into an
+  // rsqrt approximation and a Newton-Raphson step, which gives NaN for an
+  // overflowing |in|^2, so the normalizations are only checked on the SIMD
+  // paths with icpx.  magr's AVX-512 version may give NaN for an overflowing
+  // |in|^2 (the other paths give INF)
+  printf("\nmagnitude special values\n");
+  {
+    const std::string lvl = EVM::getOptLevel();
+#if defined(__INTEL_LLVM_COMPILER)
+    const bool normSpecial = (lvl == "AVX512" || lvl == "AVX2" ||
+                              lvl == "AVX");
+#else
+    const bool normSpecial = true;
+#endif
+    checkMagSpecial("magSq(complex) special", TOL_EXACT, MS_SQ,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magSq(a, n, o); });
+    checkMagSpecial("mag(complex) special", TOL_EXACT, MS_MAG,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::mag(a, n, o); });
+    checkMagSpecial("magr(complex) special", TOL_RCP, MS_MAG,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magr(a, n, o); }, lvl == "AVX512");
+    checkMagSpecial("magBias(complex) special", TOL_EXACT, MS_BIAS,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magBias(a, n, o, 0.5f); });
+    checkMagSpecial("magrBias(complex) special", TOL_RCP, MS_BIAS,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magrBias(a, n, o, 0.5f); });
+    checkMagSpecial("magSum(complex) special", TOL_EXACT, MS_SUM,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magSum(a, n, o, 0.75f, 0.25f); });
+    checkMagSpecial("magrSum(complex) special", TOL_RCP, MS_SUM,
+      [](const complex<float>* a, int n, float* o, complex<float>* c)
+        { (void)o; (void)c; EVM::magrSum(a, n, o, 0.75f, 0.25f); });
+    if(normSpecial)
+    {
+      checkMagSpecial("nmag(complex) special", TOL_EXACT, MS_NORM,
+        [](const complex<float>* a, int n, float* o, complex<float>* c)
+          { (void)o; (void)c; EVM::nmag(a, n, c); });
+      checkMagSpecial("nmagr(complex) special", TOL_RCP, MS_NORM,
+        [](const complex<float>* a, int n, float* o, complex<float>* c)
+          { (void)o; (void)c; EVM::nmagr(a, n, c); });
+      checkMagSpecial("nmagnr(complex) special", TOL_NR, MS_NORM,
+        [](const complex<float>* a, int n, float* o, complex<float>* c)
+          { (void)o; (void)c; EVM::nmagnr(a, n, c); });
+    }
+    else
+      printf("  %-34s skipped (icpx default versions)\n",
+             "nmag ... nmagnr special");
+  }
 
   //--- cnvrtInt*ToFloat : out = static_cast<float>(in) ----------------------
   // the conversions must give exactly the float the cast gives (int8/int16
