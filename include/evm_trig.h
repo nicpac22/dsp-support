@@ -16,26 +16,32 @@
 //==============================================================================
 // Name:     evm_trig.h
 //
-// Purpose:  SIMD sine, cosine and atan2 for evm.h that don't need SVML
+// Purpose:  SIMD sine, cosine, atan2, exp and log for evm.h that don't need
+//           SVML
 //
 // Created:  2026/11/05
 //
 // Description:
-//  Inline helpers that compute the sine and cosine, or the atan2, of a whole
-//  register at once, for the AVX512 (avx512f), AVX2 (avx2,fma) and AVX (avx)
-//  versions of the evm.h functions.  Each helper has the target attribute of
-//  the instruction set it is written for, so it can only be called from a
-//  function with the same (or a larger) target:
+//  Inline helpers that compute the sine and cosine, the atan2, the exp or the
+//  log of a whole register at once, for the AVX512 (avx512f), AVX2
+//  (avx2,fma) and AVX (avx) versions of the evm.h functions.  Each helper has
+//  the target attribute of the instruction set it is written for, so it can
+//  only be called from a function with the same (or a larger) target:
 //    sincosCyc  sine and cosine of 2*pi*ph, phase in cycles
 //    sincosRad  sine and cosine of x, x in radians
 //    atan2Cyc   atan2(y, x) in cycles
 //    atan2Rad   atan2(y, x) in radians
+//    exp        e^x
+//    log        natural logarithm of x
 //  with the suffix 512, Avx2 or Avx.
 //
 //  The polynomials are the Cephes single precision minimax ones (Stephen
 //  Moshier), the cycles versions fold 2*pi (sin/cos) or 1/(2*pi) (atan) into
-//  the coefficients.  Accuracy (maximum error measured over random and edge
-//  case inputs):
+//  the coefficients.  exp and log are Cephes only on AVX: on AVX512 and AVX2
+//  they are table-driven (8 to 32 entry tables read with permutes and
+//  shorter near-minimax polynomials), 1.6-2x faster and somewhat less
+//  accurate.  Accuracy (maximum error measured over random and edge case
+//  inputs, for exp and log over every float input):
 //    sincosCyc  1.7 ulp at any phase: whole cycles and quarter cycles are
 //               removed exactly, unlike sincos(2*pi*ph), which loses accuracy
 //               as the phase grows (abs error 8e-7 by 2 cycles, 4e-3 by 1e4);
@@ -43,8 +49,13 @@
 //    sincosRad  1.6 ulp (AVX512/AVX2) or 3.3 ulp (AVX) for |x| <= 65536,
 //               larger |x| fall back to scalar sincosf for those lanes
 //    atan2      2.5 ulp (radians), 2.3 ulp (cycles)
+//    exp        0.99 ulp (AVX512, AVX), 1.14 ulp (AVX2); past |x| = 87.3 x
+//               is clamped to [-104, 89], where e^x rounds to 0 or INF anyway
+//    log        2.4 ulp (AVX512), 2.8 ulp (AVX2), 0.83 ulp (AVX)
 //  Zeros (with their signs), infinities and NaN give the same results as the
-//  C library's atan2f, sinf and cosf.
+//  C library's atan2f, sinf, cosf, expf and logf, and so do exp's denormal
+//  results and log's denormal inputs (with FTZ/DAZ on, a denormal result is
+//  0 and a denormal input acts as 0, as in the C library).
 //==============================================================================
 #ifndef EVM_TRIG_H
 #define EVM_TRIG_H
@@ -503,6 +514,385 @@ namespace TRIG
   { return atan2Avx<true>(y, x); }
   TA1 inline __m256 atan2RadAvx(const __m256 y, const __m256 x)
   { return atan2Avx<false>(y, x); }
+
+  //======================================================== exp and log ===//
+  // AVX512 and AVX2 are table-driven:
+  //   e^x = 2^(n/N) * e^r: t = x*N/ln2 + 1.5*2^23 rounds n into the low bits
+  //   of t (the table index), n/N = t/N - 1.5*2^23/N exactly, r = x -
+  //   (n/N)*ln2 with ln2 as the float nearest it plus the rest (|r| <=
+  //   ln2/(2N)) and e^r - 1 = r + r^2*(P0 + P1*r).  The table holds 2^(j/N).
+  //   log(x) = k*ln2 + log(c) + log1p(r) with x = 2^k*m, c the center of the
+  //   table entry m falls in (1 for the entries next to 1.0, so that results
+  //   near 0 keep their accuracy), r = m/c - 1 and log1p(r) = r +
+  //   r^2*P(r).  The tables hold 1/c and log(c) = -log(1/c), so r and log(c)
+  //   agree whatever the rounding of 1/c.
+  // The polynomials are near-minimax for their r ranges.  AVX uses the Cephes
+  // expf and logf polynomials: e^x = 2^n * e^r with r = x - n*ln2 (ln2 as
+  // Cephes' 9-bit 0.693359375, which n times is exact, plus the rest),
+  // e^r = 1 + r + r^2*P(r), and log(x) = e*ln2 + log(1+f) with 1+f in
+  // [sqrt(.5), sqrt(2)), log(1+f) = f - f^2/2 + f^3*P(f).
+  //
+  // Registers with a lane past |x| = 87.3 (or NaN), where e^x is not a
+  // normal float, take a branch to a version that clamps x to [-104, 89]
+  // (x second, so a NaN passes through min/max), past which e^x rounds to 0
+  // or INF anyway, and applies 2^n so that a denormal result or an overflow
+  // rounds right.  Clamping every register cost 10% (AVX512) to 25% (AVX2).
+  constexpr float EXP_FAST = 87.3f, EXP_LO = -104.0f, EXP_HI = 89.0f;
+  // 2^(j/16) and 2^(j/8), e^r - 1 coefficients for |r| <= ln2/32 and ln2/16
+  alignas(64) inline constexpr float EXP_T16[16] = {
+    1.000000000e+00f, 1.044273734e+00f, 1.090507746e+00f, 1.138788581e+00f,
+    1.189207077e+00f, 1.241857767e+00f, 1.296839595e+00f, 1.354255557e+00f,
+    1.414213538e+00f, 1.476826191e+00f, 1.542210817e+00f, 1.610490322e+00f,
+    1.681792855e+00f, 1.756252170e+00f, 1.834008098e+00f, 1.915206552e+00f};
+  alignas(32) inline constexpr float EXP_T8[8] = {
+    1.000000000e+00f, 1.090507746e+00f, 1.189207077e+00f, 1.296839595e+00f,
+    1.414213538e+00f, 1.542210817e+00f, 1.681792855e+00f, 1.834008098e+00f};
+  constexpr float EXP16_P0 = 5.000162125e-01f, EXP16_P1 = 1.666704565e-01f;
+  constexpr float EXP8_P0 = 5.000647306e-01f, EXP8_P1 = 1.666822731e-01f;
+  // log, AVX512: m = getmant(x) in [0.75, 1.5), entry j = top 5 mantissa
+  // bits of m: [1+j/32, 1+(j+1)/32) for j < 16, [0.5+j/64, 0.5+(j+1)/64)
+  // for j >= 16, |r| <= 1/32
+  alignas(64) inline constexpr float LOG_INVC32[32] = {
+    1.000000000e+00f, 9.552238584e-01f, 9.275362492e-01f, 9.014084339e-01f,
+    8.767123222e-01f, 8.533333540e-01f, 8.311688304e-01f, 8.101266026e-01f,
+    7.901234627e-01f, 7.710843086e-01f, 7.529411912e-01f, 7.356321812e-01f,
+    7.191011310e-01f, 7.032967210e-01f, 6.881720424e-01f, 6.736842394e-01f,
+    1.319587588e+00f, 1.292929292e+00f, 1.267326713e+00f, 1.242718458e+00f,
+    1.219047666e+00f, 1.196261644e+00f, 1.174311876e+00f, 1.153153181e+00f,
+    1.132743359e+00f, 1.113043427e+00f, 1.094017148e+00f, 1.075630307e+00f,
+    1.057851195e+00f, 1.040650368e+00f, 1.024000049e+00f, 1.000000000e+00f};
+  alignas(64) inline constexpr float LOG_LOGC32[32] = {
+    0.000000000e+00f, 4.580955952e-02f, 7.522340119e-02f, 1.037968099e-01f,
+    1.315763593e-01f, 1.586050093e-01f, 1.849223375e-01f, 2.105647475e-01f,
+    2.355660647e-01f, 2.599575520e-01f, 2.837681472e-01f, 3.070250452e-01f,
+    3.297532797e-01f, 3.519763947e-01f, 3.737164140e-01f, 3.949937522e-01f,
+    -2.773192525e-01f, -2.569104135e-01f, -2.369097322e-01f, -2.173012793e-01f,
+    -1.980699450e-01f, -1.792013943e-01f, -1.606823355e-01f, -1.425000876e-01f,
+    -1.246424392e-01f, -1.070980877e-01f, -8.985637873e-02f, -7.290682197e-02f,
+    -5.623967573e-02f, -3.984587267e-02f, -2.371657453e-02f, 0.000000000e+00f};
+  constexpr float LOG32_P0 = -5.000011921e-01f, LOG32_P1 = 3.333663344e-01f,
+    LOG32_P2 = -2.439804077e-01f;
+  // log, AVX2: z = x/2^k in [0.71875, 1.4375) and entry j from the bits of x
+  // minus those of 0.71875, 2^20 apart, so that 1.0 is in the middle of
+  // entry 4 (in bits), |r| <= 1/16
+  constexpr int LOG8_OFF = 0x3f380000;
+  alignas(32) inline constexpr float LOG_INVC8[8] = {
+    1.333333373e+00f, 1.230769277e+00f, 1.142857194e+00f, 1.066666722e+00f,
+    1.000000000e+00f, 8.888888955e-01f, 8.000000119e-01f, 7.272727489e-01f};
+  alignas(32) inline constexpr float LOG_LOGC8[8] = {
+    -2.876821160e-01f, -2.076393962e-01f, -1.335314363e-01f, -6.453857571e-02f,
+    0.000000000e+00f, 1.177830249e-01f, 2.231435329e-01f, 3.184536994e-01f};
+  constexpr float LOG8_P0 = -4.999994338e-01f, LOG8_P1 = 3.333380520e-01f,
+    LOG8_P2 = -2.506930828e-01f, LOG8_P3 = 1.981910318e-01f;
+  // ln2 as the float nearest it plus the rest (FMA), and Cephes' (AVX)
+  constexpr float LN2_HI = 0.693147182f, LN2_LO = -1.90465421e-09f;
+  constexpr float LN2_C1 = 0.693359375f, LN2_C2 = -2.12194442e-4f;
+  // Cephes expf and logf, AVX
+  constexpr float EXP_P5 = 1.9875691500e-4f, EXP_P4 = 1.3981999507e-3f,
+    EXP_P3 = 8.3334519073e-3f, EXP_P2 = 4.1665795894e-2f,
+    EXP_P1 = 1.6666665459e-1f, EXP_P0 = 5.0000001201e-1f;
+  constexpr float LOG_P8 = 7.0376836292e-2f, LOG_P7 = -1.1514610310e-1f,
+    LOG_P6 = 1.1676998740e-1f, LOG_P5 = -1.2420140846e-1f,
+    LOG_P4 = 1.4249322787e-1f, LOG_P3 = -1.6668057665e-1f,
+    LOG_P2 = 2.0000714765e-1f, LOG_P1 = -2.4999993993e-1f,
+    LOG_P0 = 3.3333331174e-1f;
+
+  // 2^(n/16) * e^r of an x already in range (see above)
+  TA5 inline __m512 expTable512(const __m512 x)
+  {
+    const __m512 magic = _mm512_set1_ps(12582912.0f);   // 1.5*2^23
+    const __m512 t = _mm512_fmadd_ps(x, _mm512_set1_ps(2.308312035e+01f),
+        magic);                                          // n + magic
+    const __m512 n16 = _mm512_fmsub_ps(t, _mm512_set1_ps(0.0625f),
+        _mm512_set1_ps(786432.0f));                      // n/16
+    __m512 r = _mm512_fnmadd_ps(n16, _mm512_set1_ps(LN2_HI), x);
+    r = _mm512_fnmadd_ps(n16, _mm512_set1_ps(LN2_LO), r);
+    const __m512 tb = _mm512_permutexvar_ps(_mm512_castps_si512(t),
+        _mm512_load_ps(EXP_T16));                        // 2^((n mod 16)/16)
+    const __m512 em1 = _mm512_fmadd_ps(_mm512_fmadd_ps(_mm512_set1_ps(
+        EXP16_P1), r, _mm512_set1_ps(EXP16_P0)), _mm512_mul_ps(r, r), r);
+    // times 2^floor(n/16), rounded once, so a denormal result is right and
+    // an overflow INF
+    return _mm512_scalef_ps(_mm512_fmadd_ps(tb, em1, tb), n16);
+  }
+
+  // exp for registers with a lane past |x| = 87.3 or a NaN
+  __attribute__((__target__("avx512f"), __noinline__))
+  inline __m512 expFar512(const __m512 x)
+  {
+    return expTable512(_mm512_max_ps(_mm512_set1_ps(EXP_LO),
+        _mm512_min_ps(_mm512_set1_ps(EXP_HI), x)));
+  }
+
+  TA5 inline __m512 exp512(const __m512 x)
+  {
+    if(_mm512_cmp_ps_mask(_mm512_abs_ps(x), _mm512_set1_ps(EXP_FAST),
+        _CMP_NLE_UQ)) return expFar512(x);
+    return expTable512(x);
+  }
+
+  TA5 inline __m512 log512(const __m512 x)
+  {
+    // x = 2^k*m with m in [0.75, 1.5) (getexp/getmant also handle
+    // denormals): getmant halves a mantissa of 1.5 or more, and k is then
+    // one more than getexp
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 m = _mm512_getmant_ps(x, _MM_MANT_NORM_p75_1p5,
+        _MM_MANT_SIGN_zero);
+    const __m512 ex = _mm512_getexp_ps(x);
+    const __m512 k = _mm512_mask_add_ps(ex, _mm512_cmp_ps_mask(m, one,
+        _CMP_LT_OQ), ex, one);
+    // entry from the top 5 mantissa bits of m (permutex2var uses the low 5
+    // bits of the index)
+    const __m512i j = _mm512_srli_epi32(_mm512_castps_si512(m), 18);
+    const __m512 ic = _mm512_permutex2var_ps(_mm512_load_ps(LOG_INVC32), j,
+        _mm512_load_ps(LOG_INVC32 + 16));
+    const __m512 lc = _mm512_permutex2var_ps(_mm512_load_ps(LOG_LOGC32), j,
+        _mm512_load_ps(LOG_LOGC32 + 16));
+    const __m512 r = _mm512_fmsub_ps(m, ic, one);
+    __m512 h = _mm512_fmadd_ps(_mm512_set1_ps(LOG32_P2), r,
+        _mm512_set1_ps(LOG32_P1));
+    h = _mm512_fmadd_ps(h, r, _mm512_set1_ps(LOG32_P0));
+    const __m512 y = _mm512_fmadd_ps(_mm512_mul_ps(r, r), h, _mm512_add_ps(
+        _mm512_fmadd_ps(k, _mm512_set1_ps(LN2_HI), lc), r));
+    // special inputs by class, in one instruction (a denormal counts as zero
+    // under DAZ): +-0 gives -INF, 1 gives +0, negative numbers and -INF give
+    // NaN, +INF gives +INF and a NaN stays NaN
+    return _mm512_fixupimm_ps(y, x, _mm512_set1_epi32(0x03538422), 0);
+  }
+
+  // 2^(n/8) * e^r of an x in range: the table entry and n
+  TA2 inline __m256 expTableAvx2(const __m256 x, __m256i &n)
+  {
+    const __m256 magic = _mm256_set1_ps(12582912.0f);
+    const __m256 t = _mm256_fmadd_ps(x, _mm256_set1_ps(1.154156017e+01f),
+        magic);
+    const __m256 n8 = _mm256_fmsub_ps(t, _mm256_set1_ps(0.125f),
+        _mm256_set1_ps(1572864.0f));
+    __m256 r = _mm256_fnmadd_ps(n8, _mm256_set1_ps(LN2_HI), x);
+    r = _mm256_fnmadd_ps(n8, _mm256_set1_ps(LN2_LO), r);
+    const __m256 tb = _mm256_permutevar8x32_ps(_mm256_load_ps(EXP_T8),
+        _mm256_castps_si256(t));
+    const __m256 em1 = _mm256_fmadd_ps(_mm256_fmadd_ps(_mm256_set1_ps(
+        EXP8_P1), r, _mm256_set1_ps(EXP8_P0)), _mm256_mul_ps(r, r), r);
+    n = _mm256_sub_epi32(_mm256_castps_si256(t), _mm256_castps_si256(magic));
+    return _mm256_fmadd_ps(tb, em1, tb);
+  }
+
+  // 2^n from the bits (n+127)<<23, for n in -126..127
+  TA2 inline __m256 pow2Avx2(const __m256i n)
+  {
+    return _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_add_epi32(n,
+        _mm256_set1_epi32(127)), 23));
+  }
+
+  // exp for registers with a lane past |x| = 87.3 or a NaN: 2^floor(n/8)
+  // (-150..128) as two factors, which round once, in the last multiply
+  __attribute__((__target__("avx2,fma"), __noinline__))
+  inline __m256 expFarAvx2(const __m256 x)
+  {
+    __m256i n;
+    const __m256 m = expTableAvx2(_mm256_max_ps(_mm256_set1_ps(EXP_LO),
+        _mm256_min_ps(_mm256_set1_ps(EXP_HI), x)), n);
+    const __m256i k = _mm256_srai_epi32(n, 3);
+    const __m256i k1 = _mm256_srai_epi32(k, 1);
+    return _mm256_mul_ps(_mm256_mul_ps(m, pow2Avx2(k1)),
+        pow2Avx2(_mm256_sub_epi32(k, k1)));
+  }
+
+  TA2 inline __m256 expAvx2(const __m256 x)
+  {
+    if(_mm256_movemask_ps(_mm256_cmp_ps(_mm256_andnot_ps(
+        _mm256_set1_ps(-0.0f), x), _mm256_set1_ps(EXP_FAST), _CMP_NLE_UQ)))
+      return expFarAvx2(x);
+    // every result is a normal float here: 2^floor(n/8) is added to the
+    // exponent bits
+    __m256i n;
+    const __m256 m = expTableAvx2(x, n);
+    return _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(m),
+        _mm256_slli_epi32(_mm256_srai_epi32(n, 3), 23)));
+  }
+
+  // r, k and log(c) of a positive normal x: subtracting the bits of the
+  // table's start puts k in the top bits and the entry in the next 3, and
+  // removing k*2^23 from the bits of x gives z = x/2^k
+  TA2 inline __m256 logReduceAvx2(const __m256 x, __m256 &k, __m256 &lc)
+  {
+    const __m256i ix = _mm256_castps_si256(x);
+    const __m256i tmp = _mm256_sub_epi32(ix, _mm256_set1_epi32(LOG8_OFF));
+    const __m256i j = _mm256_srli_epi32(tmp, 20); // vpermps uses 3 bits
+    k = _mm256_cvtepi32_ps(_mm256_srai_epi32(tmp, 23));
+    const __m256 z = _mm256_castsi256_ps(_mm256_sub_epi32(ix,
+        _mm256_and_si256(tmp, _mm256_set1_epi32(-0x00800000))));
+    lc = _mm256_permutevar8x32_ps(_mm256_load_ps(LOG_LOGC8), j);
+    return _mm256_fmsub_ps(z, _mm256_permutevar8x32_ps(_mm256_load_ps(
+        LOG_INVC8), j), _mm256_set1_ps(1.0f));
+  }
+
+  // k*ln2 + log(c) + log1p(r)
+  TA2 inline __m256 logPolyAvx2(const __m256 r, const __m256 k,
+      const __m256 lc)
+  {
+    __m256 h = _mm256_fmadd_ps(_mm256_set1_ps(LOG8_P3), r,
+        _mm256_set1_ps(LOG8_P2));
+    h = _mm256_fmadd_ps(h, r, _mm256_set1_ps(LOG8_P1));
+    h = _mm256_fmadd_ps(h, r, _mm256_set1_ps(LOG8_P0));
+    return _mm256_fmadd_ps(_mm256_mul_ps(r, r), h, _mm256_add_ps(
+        _mm256_fmadd_ps(k, _mm256_set1_ps(LN2_HI), lc), r));
+  }
+
+  // log for registers with an input that isn't a positive normal float:
+  // denormals are scaled by 2^23 first (under DAZ they read as zero), +INF
+  // gives +INF, +-0 gives -INF, negative numbers and NaN give NaN
+  __attribute__((__target__("avx2,fma"), __noinline__))
+  inline __m256 logSpecialAvx2(const __m256 x)
+  {
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 den = _mm256_cmp_ps(x, _mm256_set1_ps(1.17549435e-38f),
+        _CMP_LT_OQ);
+    __m256 k, lc;
+    const __m256 r = logReduceAvx2(_mm256_mul_ps(x, sel256(den,
+        _mm256_set1_ps(1.0f), _mm256_set1_ps(8388608.0f))), k, lc);
+    __m256 y = logPolyAvx2(r, _mm256_sub_ps(k, _mm256_and_ps(den,
+        _mm256_set1_ps(23.0f))), lc);
+    y = sel256(_mm256_cmp_ps(x, _mm256_set1_ps(__builtin_inff()),
+        _CMP_EQ_OQ), y, x);
+    y = sel256(_mm256_cmp_ps(x, zero, _CMP_EQ_OQ), y,
+        _mm256_set1_ps(-__builtin_inff()));
+    return _mm256_or_ps(y, _mm256_cmp_ps(x, zero, _CMP_NGE_UQ)); // all ones
+  }
+
+  TA2 inline __m256 logAvx2(const __m256 x)
+  {
+    // x not a positive normal float: its bits minus 0x00800000 are not below
+    // 0x7f000000 (unsigned), i.e. bits + 0x7f800000 > 0xfeffffff (signed)
+    if(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(
+        _mm256_add_epi32(_mm256_castps_si256(x),
+        _mm256_set1_epi32(0x7f800000)), _mm256_set1_epi32(-0x01000001)))))
+      return logSpecialAvx2(x);
+    __m256 k, lc;
+    const __m256 r = logReduceAvx2(x, k, lc);
+    return logPolyAvx2(r, k, lc);
+  }
+
+  // e^r polynomial of x and n (Cephes, no FMA)
+  TA1 inline __m256 expPolyAvx(const __m256 x, __m256 &n)
+  {
+    n = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269502f)),
+        _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256 r = _mm256_sub_ps(x, _mm256_mul_ps(n, _mm256_set1_ps(LN2_C1)));
+    r = _mm256_sub_ps(r, _mm256_mul_ps(n, _mm256_set1_ps(LN2_C2)));
+    __m256 p = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(EXP_P5), r),
+        _mm256_set1_ps(EXP_P4));
+    p = _mm256_add_ps(_mm256_mul_ps(p, r), _mm256_set1_ps(EXP_P3));
+    p = _mm256_add_ps(_mm256_mul_ps(p, r), _mm256_set1_ps(EXP_P2));
+    p = _mm256_add_ps(_mm256_mul_ps(p, r), _mm256_set1_ps(EXP_P1));
+    p = _mm256_add_ps(_mm256_mul_ps(p, r), _mm256_set1_ps(EXP_P0));
+    return _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(p, _mm256_mul_ps(r, r)),
+        r), _mm256_set1_ps(1.0f));
+  }
+
+  // 2^n for an integer valued n in -126..127: converting (n+127)*2^23
+  // (exact) to an integer gives the bits (n+127)<<23
+  TA1 inline __m256 pow2Avx(const __m256 n)
+  {
+    return _mm256_castsi256_ps(_mm256_cvtps_epi32(_mm256_mul_ps(
+        _mm256_add_ps(n, _mm256_set1_ps(127.0f)),
+        _mm256_set1_ps(8388608.0f))));
+  }
+
+  // as expFarAvx2: n is -150..129, 2^n as two factors
+  __attribute__((__target__("avx"), __noinline__))
+  inline __m256 expFarAvx(const __m256 x)
+  {
+    __m256 n;
+    const __m256 p = expPolyAvx(_mm256_max_ps(_mm256_set1_ps(EXP_LO),
+        _mm256_min_ps(_mm256_set1_ps(EXP_HI), x)), n);
+    const __m256 n1 = _mm256_round_ps(_mm256_mul_ps(n, _mm256_set1_ps(0.5f)),
+        _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+    return _mm256_mul_ps(_mm256_mul_ps(p, pow2Avx(n1)),
+        pow2Avx(_mm256_sub_ps(n, n1)));
+  }
+
+  TA1 inline __m256 expAvx(const __m256 x)
+  {
+    if(_mm256_movemask_ps(_mm256_cmp_ps(_mm256_andnot_ps(
+        _mm256_set1_ps(-0.0f), x), _mm256_set1_ps(EXP_FAST), _CMP_NLE_UQ)))
+      return expFarAvx(x);
+    __m256 n;
+    const __m256 p = expPolyAvx(x, n);
+    return _mm256_mul_ps(p, pow2Avx(n));
+  }
+
+  // log(1+f) + e*ln2 (Cephes, no FMA)
+  TA1 inline __m256 logPolyAvx(const __m256 f, const __m256 e)
+  {
+    const __m256 z = _mm256_mul_ps(f, f);
+    __m256 y = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(LOG_P8), f),
+        _mm256_set1_ps(LOG_P7));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P6));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P5));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P4));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P3));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P2));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P1));
+    y = _mm256_add_ps(_mm256_mul_ps(y, f), _mm256_set1_ps(LOG_P0));
+    y = _mm256_mul_ps(_mm256_mul_ps(y, f), z);
+    y = _mm256_add_ps(y, _mm256_mul_ps(e, _mm256_set1_ps(LN2_C2)));
+    y = _mm256_sub_ps(y, _mm256_mul_ps(z, _mm256_set1_ps(0.5f)));
+    return _mm256_add_ps(_mm256_add_ps(f, y), _mm256_mul_ps(e,
+        _mm256_set1_ps(LN2_C1)));
+  }
+
+  // f and e of a positive normal x with float instructions: 1+f is the
+  // mantissa in [1,2), halved (and e raised by 1) above sqrt(2), and e comes
+  // from converting the exponent bits as an integer (exactly)
+  TA1 inline __m256 logReduceAvx(const __m256 x, __m256 &e)
+  {
+    __m256 m = _mm256_or_ps(_mm256_and_ps(x, _mm256_castsi256_ps(
+        _mm256_set1_epi32(0x007fffff))), _mm256_set1_ps(1.0f));
+    const __m256 big = _mm256_cmp_ps(m, _mm256_set1_ps(1.41421354f),
+        _CMP_GT_OQ);
+    e = _mm256_cvtepi32_ps(_mm256_castps_si256(_mm256_and_ps(x,
+        _mm256_castsi256_ps(_mm256_set1_epi32(0x7f800000)))));
+    e = _mm256_add_ps(_mm256_sub_ps(_mm256_mul_ps(e,
+        _mm256_set1_ps(1.0f/8388608.0f)), _mm256_set1_ps(127.0f)),
+        _mm256_and_ps(big, _mm256_set1_ps(1.0f)));
+    m = _mm256_sub_ps(m, _mm256_and_ps(big, _mm256_mul_ps(m,
+        _mm256_set1_ps(0.5f))));
+    return _mm256_sub_ps(m, _mm256_set1_ps(1.0f));
+  }
+
+  // as logSpecialAvx2
+  __attribute__((__target__("avx"), __noinline__))
+  inline __m256 logSpecialAvx(const __m256 x)
+  {
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 den = _mm256_cmp_ps(x, _mm256_set1_ps(1.17549435e-38f),
+        _CMP_LT_OQ);
+    __m256 e;
+    const __m256 f = logReduceAvx(_mm256_mul_ps(x, sel256(den,
+        _mm256_set1_ps(1.0f), _mm256_set1_ps(8388608.0f))), e);
+    __m256 y = logPolyAvx(f, _mm256_sub_ps(e, _mm256_and_ps(den,
+        _mm256_set1_ps(23.0f))));
+    y = sel256(_mm256_cmp_ps(x, _mm256_set1_ps(__builtin_inff()),
+        _CMP_EQ_OQ), y, x);
+    y = sel256(_mm256_cmp_ps(x, zero, _CMP_EQ_OQ), y,
+        _mm256_set1_ps(-__builtin_inff()));
+    return _mm256_or_ps(y, _mm256_cmp_ps(x, zero, _CMP_NGE_UQ));
+  }
+
+  TA1 inline __m256 logAvx(const __m256 x)
+  {
+    // x below FLT_MIN (or NaN) or +INF
+    if(_mm256_movemask_ps(_mm256_or_ps(_mm256_cmp_ps(x,
+        _mm256_set1_ps(1.17549435e-38f), _CMP_NGE_UQ), _mm256_cmp_ps(x,
+        _mm256_set1_ps(__builtin_inff()), _CMP_EQ_OQ))))
+      return logSpecialAvx(x);
+    __m256 e;
+    const __m256 f = logReduceAvx(x, e);
+    return logPolyAvx(f, e);
+  }
 
   #undef TA5
   #undef TA2

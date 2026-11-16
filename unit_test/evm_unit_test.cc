@@ -109,6 +109,7 @@ static const double TOL_NR    = 5.0e-6;   // reciprocal + 1x Newton (~2.5e-07)
 static const double TOL_RCP   = 2.0e-3;   // bare reciprocal        (~2.9e-04)
 static const double TOL_CMP   = 0.0;      // comparison/selection   (exact)
 static const double TOL_TRIG  = 2.0e-6;   // sin/cos/atan2          (~8.1e-07)
+static const double TOL_EXPLOG = 6.0e-7;  // exp/log, 5 ulp         (~2.5e-07)
 
 // Number of input buffers for signedAbsMin/signedAbsMax.
 static const int NBUF = 5;
@@ -136,6 +137,7 @@ static std::vector<complex<float> > gLc;        // gAc with large phases
 static std::vector<complex<float> > gLr;
 static std::vector<float>           gPf;        // |gBf|, positive divisors
 static std::vector<float>           gGa, gGb;   // divide-gather inputs
+static std::vector<float>           gEf, gLf;   // exp and log inputs
 
 static float randReal()
 {
@@ -245,6 +247,17 @@ static void generateData(unsigned int seed)
   {
     gGa[i] = randReal();
     gGb[i] = randDivisorReal();
+  }
+  // exp and log inputs, derived from gAf and gBf (no draws).  exp's cover
+  // [-88, 88], whose results go from denormals to near FLT_MAX.  log's are
+  // |gBf| times 2^-124..2^124 (FLT_MIN to 2^125), and every fourth is within
+  // 1/8 of 1, where the result is near 0
+  gEf.resize(MAXLEN);  gLf.resize(MAXLEN);
+  for(int i=0; i<MAXLEN; ++i)
+  {
+    gEf[i] = 44.0f*gAf[i];
+    gLf[i] = (i%4 == 0) ? 1.0f + 0.0625f*gAf[i] :
+        std::ldexp(std::fabs(gBf[i]), static_cast<int>(62.0f*gAf[i]));
   }
 }
 
@@ -1718,6 +1731,118 @@ static void checkInvSpecial(const char* name, const double tol,
         printf("      len=%-3d in=%-13g%s%s evm=%-13g want=%s\n", len, in[i],
                useEps ? " eps" : "", (scaled && si) ? " scale=-0" : "", g,
                want);
+      }
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, NaN/INF/0 exact", name,
+         pass ? "PASS" : "FAIL", compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// Special values for exp and log
+//
+//   runEvm(in, len, out)  calls the function under test
+//
+// Zeros of both signs, infinities, NaN, +-1, the largest and smallest normal
+// floats, denormals, large values and values around exp's overflow (88.72)
+// and underflow (denormal results from -87.34, 0 below -103.97) go through
+// every lane position, including the partial last register, at lengths 1 to
+// 40, out of place and in place.  NaN, infinities and zeros must match
+// exactly (bit tests, since icpx's fast math may drop NaN checks): exp gives
+// +INF for +INF and on overflow and +0 for -INF and below -103.97; log gives
+// -INF for +-0, NaN for a negative number or -INF, +INF for +INF and +0 for
+// 1.  Under DAZ a denormal input acts as a zero of its sign (exp gives 1, log
+// -INF), and under FTZ a result below FLT_MIN may come out as +0; otherwise
+// the error must be within tol of max(|result|, FLT_MIN).  negDenNaN also
+// accepts NaN from log for a negative denormal under DAZ (icpx's default
+// version, see the call).
+//==============================================================================
+template<class FEVM>
+static void checkExpLogSpecial(const char* name, const bool isLog,
+                               const bool negDenNaN, FEVM runEvm)
+{
+  ++gTests;
+  const unsigned int csr = _mm_getcsr();
+  const bool daz = (csr & _MM_DENORMALS_ZERO_MASK) == _MM_DENORMALS_ZERO_ON;
+  const bool ftz = (csr & _MM_FLUSH_ZERO_MASK) == _MM_FLUSH_ZERO_ON;
+  const float inf  = std::numeric_limits<float>::infinity();
+  const float fmax = std::numeric_limits<float>::max();
+  const float fmin = std::numeric_limits<float>::min();
+  // e^x rounds to INF from FLT_MAX plus half an ulp, to 0 below 2^-150
+  const double expInf = fmax + std::ldexp(1.0, 103);
+  const double expZero = std::ldexp(1.0, -150);
+  const std::vector<float> vals = {0.0f, -0.0f, inf, -inf,
+      std::numeric_limits<float>::quiet_NaN(), 1.0f, -1.0f, 0.5f, 2.0f,
+      fmax, -fmax, fmin, -fmin, std::numeric_limits<float>::denorm_min(),
+      -3.0e-39f, 1.0e-38f, 1.0e30f, -1.0e30f, 88.72283f, 88.7229f, 89.0f,
+      100.0f, -87.33654f, -87.5f, -103.9f, -103.98f, -104.0f, -200.0f,
+      1.0e-30f, 1.0000001f, 0.99999994f};
+  const int nv = static_cast<int>(vals.size());
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  std::vector<float> in(64), out(64);
+  for(int mode=0; mode<2; ++mode)
+  for(int len=1; len<=40; ++len)
+  {
+    for(int i=0; i<len; ++i) in[i] = vals[(i + len)%nv];
+    if(mode == 0) runEvm(in.data(), len, out.data());
+    else
+    {
+      for(int i=0; i<len; ++i) out[i] = in[i];
+      runEvm(out.data(), len, out.data());
+    }
+    for(int i=0; i<len; ++i)
+    {
+      float x = in[i];
+      if(daz && bitsDenormal(x)) x = bitsNeg(x) ? -0.0f : 0.0f;
+      // kind 0 = finite value, 1 = NaN, 2 = infinity, 3 = zero (as invWant)
+      InvWant w = {0, false, 0.0};
+      if(bitsNan(x)) w.kind = 1;
+      else if(isLog)
+      {
+        if(bitsNeg(x) && !bitsZero(x)) w.kind = 1;
+        else if(bitsZero(x))           { w.kind = 2; w.neg = true; }
+        else if(bitsInf(x))            w.kind = 2;
+        else if(x == 1.0f)             w.kind = 3;
+        else w.val = std::log(static_cast<double>(x));
+      }
+      else
+      {
+        w.val = bitsInf(x) ? (bitsNeg(x) ? 0.0 : HUGE_VAL) :
+                std::exp(static_cast<double>(x));
+        if(w.val >= expInf)      w.kind = 2;
+        else if(w.val < expZero) w.kind = 3;
+      }
+      const float g = out[i];
+      bool ok;
+      ++compared;
+      if(w.kind == 1 || (negDenNaN && isLog && daz && bitsDenormal(in[i]) &&
+                         bitsNeg(in[i]) && bitsNan(g))) ok = bitsNan(g);
+      else if(w.kind == 2) ok = bitsInf(g) && bitsNeg(g) == w.neg;
+      else if(w.kind == 3) ok = bitsZero(g) && !bitsNeg(g);
+      else if(ftz && std::fabs(w.val) < fmin && bitsZero(g)) ok = true;
+      else
+        ok = !bitsNan(g) && !bitsInf(g) &&
+             std::fabs(g - w.val)/std::max(std::fabs(w.val),
+                 static_cast<double>(fmin)) <= TOL_EXPLOG;
+      if(ok) continue;
+      ++nbad;
+      if(nshown < MAX_REPORT)
+      {
+        ++nshown;
+        char want[32];
+        if(w.kind == 0) snprintf(want, sizeof(want), "%.9g", w.val);
+        else snprintf(want, sizeof(want), "%s%s", w.kind == 1 ? "" :
+                      (w.neg ? "-" : "+"), w.kind == 1 ? "NaN" :
+                      (w.kind == 2 ? "INF" : "0"));
+        printf("      len=%-3d in=%-13g evm=%-13g want=%s%s\n", len, in[i], g,
+               want, mode ? " [in place]" : "");
       }
     }
   }
@@ -3318,6 +3443,46 @@ int main(int argc, char** argv)
         { EVM::cartToPolRad(a, n, o); },
       [&](const complex<float> v, int part){ return cartWant(v, part, false); },
       cartSize, true);
+  }
+
+  //--- exp / log ------------------------------------------------------------
+  // exp runs on gEf ([-88, 88], results from denormals to near FLT_MAX), log
+  // on gLf (FLT_MIN to 2^125, a quarter of them near 1).  Both use SVML when
+  // EVM_SVML is defined, except on the AVX2 path, and evm_trig.h otherwise.
+  // TOL_EXPLOG passes SVML's
+  // worst case with icpx's default fast fp-model (4 ulp) but not a wrong
+  // polynomial coefficient that TOL_TRIG would let through
+  printf("\nexp / log  (%s)\n",
+#if defined(EVM_SVML)
+         "SVML, evm_trig.h on AVX2");
+#else
+         "evm_trig.h");
+#endif
+  check<float, float, float>("exp(float)", TOL_EXPLOG, gEf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::exp(a, n, o); },
+    [](int k){ return cdbl(std::exp(static_cast<double>(gEf[k]))); });
+
+  check<float, float, float>("log(float)", TOL_EXPLOG, gLf.data(), nullF,
+    [](const float* a, const float*, int n, float* o)
+      { EVM::log(a, n, o); },
+    [](int k){ return cdbl(std::log(static_cast<double>(gLf[k]))); });
+
+  // icpx's fast math in the default version gives NaN for log of a negative
+  // denormal under DAZ when it runs in place, where its vectorized loop and
+  // the SIMD paths read the input as -0 and give -INF
+  {
+    const std::string lvl = EVM::getOptLevel();
+#if defined(__INTEL_LLVM_COMPILER)
+    const bool negDenNaN = !(lvl == "AVX512" || lvl == "AVX2" ||
+                             lvl == "AVX");
+#else
+    const bool negDenNaN = false;
+#endif
+    checkExpLogSpecial("exp(float) special", false, false,
+      [](const float* a, int n, float* o){ EVM::exp(a, n, o); });
+    checkExpLogSpecial("log(float) special", true, negDenNaN,
+      [](const float* a, int n, float* o){ EVM::log(a, n, o); });
   }
 
   //--- getSize sanity -------------------------------------------------------

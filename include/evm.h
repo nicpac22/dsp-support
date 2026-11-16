@@ -43,11 +43,20 @@
 //
 //  Independently, the polar/cartesian conversions use the Intel Short Vector
 //  Math Library (SVML) for their sine/cosine of radians and atan2 when it is
-//  available, otherwise their own SIMD versions in evm_trig.h, which are
+//  available, otherwise they use the SIMD versions in evm_trig.h, which are
 //  slightly less accurate (up to 1.6-3.3 ulp vs. 0.6-0.9 ulp).  polToCart
 //  (phase in cycles) always uses evm_trig.h, which is faster than SVML and
-//  much more accurate for large phases.  SVML will automatically be enabled
-//  when the Intel compiler is detected but may be manually disabled with:
+//  much more accurate for large phases.  exp and log also use SVML on the
+//  AVX512 and AVX paths when it is available, otherwise evm_trig.h, whose
+//  AVX512 versions are about as fast as SVML (log 6% slower).  Their AVX2
+//  versions always use evm_trig.h, which is faster than SVML's AVX2 exp and
+//  log (14% and 12% less time) and has no slow path for special values
+//  (SVML's takes 4.5-7x as long for a register with a NaN, a zero, a
+//  negative number, or an exp result near overflow or below FLT_MIN).
+//  evm_trig.h's exp and log are within 1.14 and 2.8 ulp, vs. 1.1-4 ulp for
+//  SVML with icpx's default -fp-model=fast (0.7-0.9 ulp with
+//  -fp-model=precise).  SVML will automatically be enabled when the Intel
+//  compiler is detected but may be manually disabled with:
 //    -DDISABLE_SVML (does not affect SIMD)
 //
 //  Note that currently there are only implementations for AVX, AVX2, and AVX512
@@ -1949,10 +1958,13 @@ namespace EVM
   //=========================//
   // Exponential/Logarithmic //
   //=========================//
-//    exp = compute the natural exponent of each element of an input buffer
-//        e^(in[i])
-//    log = compute the natural logarithm of each element of an input buffer
-//        (log(in[i]))
+  // Compute the natural exponent of each element of an input buffer, e^(in[i]),
+  // output may be the same as input
+  inline void exp(float const * const in, const int len, float * const out);
+  
+  // Compute the natural logarithm of each element of an input buffer,
+  // log(in[i]), output may be the same as input
+  inline void log(float const * const in, const int len, float * const out);
 
   //===============================//
   // Trigonometric/Transcendentals //
@@ -29113,6 +29125,226 @@ namespace EVM
       out[i].real(mag);
       out[i].imag(ang);
     }
+    return;
+  }
+
+  //=========================//
+  // Exponential/Logarithmic //
+  //=========================//
+  // e^(in[i])
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void exp(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm512_exp_ps(ld);
+      #else
+      ld = TRIG::exp512(ld);
+      #endif
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_maskz_loadu_ps(mk, &in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm512_exp_ps(ld);
+      #else
+      ld = TRIG::exp512(ld);
+      #endif
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void exp(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    // note: always evm_trig.h, even with SVML: its table-driven version was
+    // faster than SVML's AVX2 exp when tested empirically.  Additionally, it
+    // has no slow path for special values (SVML's takes about 7x as long
+    // for a register with a NaN or a result near overflow or below FLT_MIN)
+    __m256 ld;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = TRIG::expAvx2(ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      ld = TRIG::expAvx2(ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void exp(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm256_exp_ps(ld);
+      #else
+      ld = TRIG::expAvx(ld);
+      #endif
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_maskload_ps(&in[i], msk);
+      #if defined(EVM_SVML)
+      ld = _mm256_exp_ps(ld);
+      #else
+      ld = TRIG::expAvx(ld);
+      #endif
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void exp(float const * const in, const int len, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = expf(in[i]);
+    return;
+  }
+  
+  // log(in[i])
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void log(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld = _mm512_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm512_log_ps(ld);
+      #else
+      ld = TRIG::log512(ld);
+      #endif
+      _mm512_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&15 == len%16), the unused lanes
+    // hold 1 rather than 0, whose log is -INF (and raises FE_DIVBYZERO)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld = _mm512_mask_loadu_ps(_mm512_set1_ps(1.0f), mk, &in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm512_log_ps(ld);
+      #else
+      ld = TRIG::log512(ld);
+      #endif
+      _mm512_mask_storeu_ps(&out[i], mk, ld);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void log(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    // note: always evm_trig.h, even with SVML: its table-driven version was
+    // faster than SVML's AVX2 log when tested empirically.  Additionally it
+    // has no slow path for special values (SVML's takes about 4.5x as long
+    // for a register with a zero, a denormal, a negative number, INF or NaN)
+    __m256 ld;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = TRIG::logAvx2(ld);
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8), the unused lanes
+    // hold 1 rather than 0, which would take evm_trig.h's special-value path
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_or_ps(_mm256_maskload_ps(&in[i], msk), _mm256_andnot_ps(
+          _mm256_castsi256_ps(msk), _mm256_set1_ps(1.0f)));
+      ld = TRIG::logAvx2(ld);
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void log(float const * const in, const int len, float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld = _mm256_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      ld = _mm256_log_ps(ld);
+      #else
+      ld = TRIG::logAvx(ld);
+      #endif
+      _mm256_storeu_ps(&out[i], ld);
+    }
+    // handle remaining elements (note len&7 == len%8), the unused lanes
+    // hold 1 rather than 0, which would take evm_trig.h's special-value path
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld = _mm256_or_ps(_mm256_maskload_ps(&in[i], msk), _mm256_andnot_ps(
+          _mm256_castsi256_ps(msk), _mm256_set1_ps(1.0f)));
+      #if defined(EVM_SVML)
+      ld = _mm256_log_ps(ld);
+      #else
+      ld = TRIG::logAvx(ld);
+      #endif
+      _mm256_maskstore_ps(&out[i], msk, ld);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void log(float const * const in, const int len, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = logf(in[i]);
     return;
   }
 
