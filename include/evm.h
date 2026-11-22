@@ -348,8 +348,8 @@
 //        zero on each call to the function giving a sawtooth effect
 //    tunecx = same as tune but with phase in cycles
 //    tunesp = tunes complex data with a numerically controlled osccillator
-//        (NCO) using a direct single-precision sin/cos computation on a
-//        double-precision phase accumulator with phase in cycles, this will
+//        (NCO) using a direct single precision sin/cos computation on a
+//        double precision phase accumulator with phase in cycles, this will
 //        be more accurate than tune/tunecx (no sawtooth effect) but will be
 //        much slower
 //    fs2Shift = Fs/2 frequency shift for complex data
@@ -2006,14 +2006,40 @@ namespace EVM
   // away from the desired phase.
   //    in = input buffer of data to tune
   //    len = number of elements to process
+  //    phInit = initial phase of the tuner for this buffer in radians
+  //    phIncr = phase increment per sample in radians
+  //    out = output buffer of tuned data
+  //    EVM::tune = initial phase to use for next call this method in radians
+  inline double tune(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
+  inline double tune(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
+  // Overloaded method that also returns the complex phasor values used to tune
+  //    in = input buffer of data to tune
+  //    len = number of elements to process
+  //    phInit = initial phase of the tuner for this buffer in radians
+  //    phIncr = phase increment per sample in radians
+  //    out = output buffer of tuned data
+  //    phOut = complex phasor values used to tune the input data
+  //    EVM::tune = initial phase to use for next call this method in radians
+  inline double tune(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+  inline double tune(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+
+  // Alternate version of tune with all phases in cycles instead of radians
+  //    in = input buffer of data to tune
+  //    len = number of elements to process
   //    phInit = initial phase of the tuner for this buffer in cycles
   //    phIncr = phase increment per sample in cycles
   //    out = output buffer of tuned data
   //    EVM::tune = initial phase to use for next call this method in cycles
-  inline double tune(complex<float> const * const in, const int len,
-      const float phInit, const float phIncr, complex<float> * const out);
-  inline double tune(float const * const in, const int len,
-      const float phInit, const float phIncr, complex<float> * const out);
+  inline double tunecx(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
+  inline double tunecx(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
   // Overloaded method that also returns the complex phasor values used to tune
   //    in = input buffer of data to tune
   //    len = number of elements to process
@@ -2022,18 +2048,45 @@ namespace EVM
   //    out = output buffer of tuned data
   //    phOut = complex phasor values used to tune the input data
   //    EVM::tune = initial phase to use for next call this method in cycles
-  inline double tune(complex<float> const * const in, const int len,
-      const float phInit, const float phIncr, complex<float> * const out,
+  inline double tunecx(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
       complex<float> * const phOut);
-  inline double tune(float const * const in, const int len,
-      const float phInit, const float phIncr, complex<float> * const out,
+  inline double tunecx(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
       complex<float> * const phOut);
-
-//    tunecx = same as tune but with phase in cycles
-//    tunesp = tunes complex data with a numerically controlled osccillator
-//        (NCO) using a direct single-precision sin/cos computation on a
-//        double-precision phase accumulator with phase in cycles
-
+  
+  // Multiply complex input data with a numerically controlled oscillator
+  // (NCO) to induce a frequency shift.  This version implents the NCO as a
+  // direct single precision sin/cos computation of a double precision phase
+  // accumulator with phase in cycles, which avoids the sawtoothing effect of
+  // tunecx at the cost of slower processing speed.  The function returns the
+  // starting phase that should be used on the next call for continuity in the
+  // NCO.
+  //    in = input buffer of data to tune
+  //    len = number of elements to process
+  //    phInit = initial phase of the tuner for this buffer in cycles
+  //    phIncr = phase increment per sample in cycles
+  //    out = output buffer of tuned data
+  //    EVM::tune = initial phase to use for next call this method in cycles
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out);
+  // Overloaded method that also returns the complex phasor values used to tune
+  //    in = input buffer of data to tune
+  //    len = number of elements to process
+  //    phInit = initial phase of the tuner for this buffer in cycles
+  //    phIncr = phase increment per sample in cycles
+  //    out = output buffer of tuned data
+  //    phOut = complex phasor values used to tune the input data
+  //    EVM::tune = initial phase to use for next call this method in cycles
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+  
   // Implements a Fs/2 frequency shift (where Fs is the sampling rate) for
   // complex data
   //    in = input buffer to apply frequency shift to
@@ -29348,9 +29401,2172 @@ namespace EVM
     return;
   }
 
-  //===============================================//
-  // Specialized Functions Function Implementation //
-  //===============================================//
+  //======================================//
+  // Specialized Functions Implementation //
+  //======================================//
+  // Declare some Internal kernals for tuning in cycles that will be used by
+  // both tune and tunecx
+  inline void _tuneKernel(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+  inline void _tuneKernel(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut);
+  // NCO tune of complex data via complex multiply, phase in cycles, outputs
+  // complex phasor if phOut is not null
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void _tuneKernel(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return;
+    __m512 ld, sh, re, im;
+    __m512 pha1, pha2, pha3, pha4; // accumulator phasors, complex, 4 chains
+    __m512 phir, phii; // incrementer phasor, real and imaginary parts separate
+    // setup the accumulator phasors of elements 0-31 (pha1 has elements 0-7,
+    // pha2 8-15, pha3 16-23 and pha4 24-31), from their phases in double
+    // (sincosCycDbl512 removes the nearest quarter cycle in double).  Each
+    // call takes 16 elements, in the order unpacklo and unpackhi interleave
+    // into the registers of the first 8 and the next 8
+    const __m512d k1 = _mm512_setr_pd( 0,  1,  8,  9,  2,  3, 10, 11);
+    const __m512d k2 = _mm512_setr_pd( 4,  5, 12, 13,  6,  7, 14, 15);
+    const __m512d k3 = _mm512_setr_pd(16, 17, 24, 25, 18, 19, 26, 27);
+    const __m512d k4 = _mm512_setr_pd(20, 21, 28, 29, 22, 23, 30, 31);
+    const __m512d dInit = _mm512_set1_pd(phInit);
+    const __m512d dIncr = _mm512_set1_pd(phIncr);
+    __m512d pd, pe;
+    // phInit + k*phIncr, k in [0, 15] (element 0 keeps phInit, so it stays
+    // finite for a NaN or INF phIncr as in the default version)
+    pd = _mm512_mask3_fmadd_pd(k1, dIncr, dInit, 0xfe);
+    pe = _mm512_fmadd_pd(k2, dIncr, dInit);
+    TRIG::sincosCycDbl512(pd, pe, sh, re); // sh = sin, re = cos
+    // interleave real and imaginary parts of accumulator (cos and sin)
+    pha1 = _mm512_unpacklo_ps(re, sh); // elements 0-7
+    pha2 = _mm512_unpackhi_ps(re, sh); // elements 8-15
+    // phInit + k*phIncr, k in [16, 31]
+    pd = _mm512_fmadd_pd(k3, dIncr, dInit);
+    pe = _mm512_fmadd_pd(k4, dIncr, dInit);
+    TRIG::sincosCycDbl512(pd, pe, sh, re);
+    pha3 = _mm512_unpacklo_ps(re, sh); // elements 16-23
+    pha4 = _mm512_unpackhi_ps(re, sh); // elements 24-31
+    // setup incrementer phasor e^(j*32*phIncr), real and imaginary parts
+    pd = _mm512_set1_pd(32.0*phIncr);
+    TRIG::sincosCycDbl512(pd, pd, phii, phir);
+    // main loop
+    int i = 0;
+    for(; i<len-31; i+=32) // process 32 complex elements, 8 per chain
+    {
+      // output the accumulator phasors of elements i to i+31 if requested
+      // (phOut is the same on every pass, so the branch predicts well)
+      if(phOut)
+      {
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha2);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+16]), pha3);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+24]), pha4);
+      }
+      // chain 1, elements i to i+7
+      // note we split the load register into real/imag and shuffle the
+      // accumulator so we can use the shuffled accumulator for the increment
+      // stage as well
+      ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));  // B
+      sh = _mm512_shuffle_ps(pha1, pha1, 0xb1); // [Ai0,Ar0,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      im = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      ld = _mm512_fmaddsub_ps(re, pha1, im); // [Br0*Ar0-Bi0*Ai0,...]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld);
+      // now increment the accumulator phasor, same as above but the
+      // incrementer is already split into re and im parts
+      im = _mm512_mul_ps(sh, phii);
+      pha1 = _mm512_fmaddsub_ps(phir, pha1, im);
+      // chain 2, elements i+8 to i+15
+      ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      sh = _mm512_shuffle_ps(pha2, pha2, 0xb1);
+      im = _mm512_movehdup_ps(ld);
+      re = _mm512_moveldup_ps(ld);
+      im = _mm512_mul_ps(sh, im);
+      ld = _mm512_fmaddsub_ps(re, pha2, im);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld);
+      im = _mm512_mul_ps(sh, phii);
+      pha2 = _mm512_fmaddsub_ps(phir, pha2, im);
+      // chain 3, elements i+16 to i+23
+      ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+16]));
+      sh = _mm512_shuffle_ps(pha3, pha3, 0xb1);
+      im = _mm512_movehdup_ps(ld);
+      re = _mm512_moveldup_ps(ld);
+      im = _mm512_mul_ps(sh, im);
+      ld = _mm512_fmaddsub_ps(re, pha3, im);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+16]), ld);
+      im = _mm512_mul_ps(sh, phii);
+      pha3 = _mm512_fmaddsub_ps(phir, pha3, im);
+      // chain 4, elements i+24 to i+31
+      ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+24]));
+      sh = _mm512_shuffle_ps(pha4, pha4, 0xb1);
+      im = _mm512_movehdup_ps(ld);
+      re = _mm512_moveldup_ps(ld);
+      im = _mm512_mul_ps(sh, im);
+      ld = _mm512_fmaddsub_ps(re, pha4, im);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+24]), ld);
+      im = _mm512_mul_ps(sh, phii);
+      pha4 = _mm512_fmaddsub_ps(phir, pha4, im);
+    }
+    // handle the remaining 0-31 elements: pha1 has the phasors of the next
+    // 8, pha2 the 8 after that, and so on
+    for(; i<len; i+=8)
+    {
+      // each complex is 2 floats, so double the count (a whole register
+      // until the last one)
+      const __mmask16 mk = mask16(std::min(len-i, 8)<<1);
+      ld = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(&in[i]));
+      sh = _mm512_shuffle_ps(pha1, pha1, 0xb1); // [Ai0,Ar0,...,Ai7,Ar7]
+      im = _mm512_movehdup_ps(ld); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+      re = _mm512_moveldup_ps(ld); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+      im = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+      ld = _mm512_fmaddsub_ps(re, pha1, im); // [Br0*Ar0-Bi0*Ai0,...]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld);
+      if(phOut)
+      {
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i]), mk, pha1);
+      }
+      // move the next chain's phasors down
+      pha1 = pha2;
+      pha2 = pha3;
+      pha3 = pha4;
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2
+  __attribute__((__target__("avx2,fma")))
+  inline void _tuneKernel(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    // unlike the AVX-512 version, the accumulator phasors keep their real
+    // (cos) and imaginary (sin) parts in separate registers, and the input is
+    // split the same way: the interleaved form needs 3 shuffles per register
+    // of 4 elements, which made it shuffle-bound on AVX2 with icpx (15%
+    // slower from 1024 elements; this form needs 4 shuffles per 8 elements)
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im, yr, yi;
+    // accumulator phasors, 4 chains of 8 elements, cos and sin separate
+    __m256 c1, s1, c2, s2, c3, s3, c4, s4;
+    __m256 phir, phii; // incrementer phasor, real and imaginary parts
+    // setup the accumulator phasors of elements 0-31 (c1, s1 have elements
+    // 0-7, c2, s2 8-15 and so on), from their phases in double
+    // (sincosCycDblAvx2 removes the nearest quarter cycle in double).  The
+    // elements of each chain are in the lane order of the input split below,
+    // 0,1,4,5,2,3,6,7, and each call takes lanes 0-3 from its first argument
+    // and lanes 4-7 from its second
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d k5 = _mm256_setr_pd(16, 17, 20, 21);
+    const __m256d k6 = _mm256_setr_pd(18, 19, 22, 23);
+    const __m256d k7 = _mm256_setr_pd(24, 25, 28, 29);
+    const __m256d k8 = _mm256_setr_pd(26, 27, 30, 31);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d pd, pe;
+    // phInit + k*phIncr, k in [0, 7] (element 0 keeps phInit, so it stays
+    // finite for a NaN or INF phIncr as in the default version)
+    pd = _mm256_fmadd_pd(k1, dIncr, dInit);
+    pd = _mm256_blend_pd(pd, dInit, 0x1);
+    pe = _mm256_fmadd_pd(k2, dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s1, c1);
+    // phInit + k*phIncr, k in [8, 15]
+    pd = _mm256_fmadd_pd(k3, dIncr, dInit);
+    pe = _mm256_fmadd_pd(k4, dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s2, c2);
+    // phInit + k*phIncr, k in [16, 23]
+    pd = _mm256_fmadd_pd(k5, dIncr, dInit);
+    pe = _mm256_fmadd_pd(k6, dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s3, c3);
+    // phInit + k*phIncr, k in [24, 31]
+    pd = _mm256_fmadd_pd(k7, dIncr, dInit);
+    pe = _mm256_fmadd_pd(k8, dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s4, c4);
+    // setup incrementer phasor e^(j*32*phIncr), real and imaginary parts
+    pd = _mm256_set1_pd(32.0*phIncr);
+    TRIG::sincosCycDblAvx2(pd, pd, phii, phir);
+    // main loop
+    int i = 0;
+    for(; i<len-31; i+=32) // process 32 complex elements, 8 per chain
+    {
+      // output the accumulator phasors of elements i to i+31 if requested,
+      // interleaved again (phOut is the same on every pass, so the branch
+      // predicts well)
+      if(phOut)
+      {
+        float * const ph = reinterpret_cast<float *>(&phOut[i]);
+        _mm256_storeu_ps(ph, _mm256_unpacklo_ps(c1, s1));
+        _mm256_storeu_ps(ph+8, _mm256_unpackhi_ps(c1, s1));
+        _mm256_storeu_ps(ph+16, _mm256_unpacklo_ps(c2, s2));
+        _mm256_storeu_ps(ph+24, _mm256_unpackhi_ps(c2, s2));
+        _mm256_storeu_ps(ph+32, _mm256_unpacklo_ps(c3, s3));
+        _mm256_storeu_ps(ph+40, _mm256_unpackhi_ps(c3, s3));
+        _mm256_storeu_ps(ph+48, _mm256_unpacklo_ps(c4, s4));
+        _mm256_storeu_ps(ph+56, _mm256_unpackhi_ps(c4, s4));
+      }
+      // chain 1, elements i to i+7
+      // split the input into real and imaginary parts, in the lane order of
+      // the phasors
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));   // B0-3
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B4-7
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Br0,Br1,Br4,Br5|Br2,...,Br7]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Bi0,Bi1,Bi4,Bi5|Bi2,...,Bi7]
+      yr = _mm256_fmsub_ps(re, c1, _mm256_mul_ps(im, s1)); // Br*Ar-Bi*Ai
+      yi = _mm256_fmadd_ps(re, s1, _mm256_mul_ps(im, c1)); // Br*Ai+Bi*Ar
+      // interleave the real and imaginary parts again: unpacklo gives
+      // elements 0-3 and unpackhi elements 4-7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(yr, yi));
+      // now increment the accumulator phasor, the same complex multiply
+      // with the incrementer
+      yr = _mm256_fmsub_ps(c1, phir, _mm256_mul_ps(s1, phii));
+      s1 = _mm256_fmadd_ps(c1, phii, _mm256_mul_ps(s1, phir));
+      c1 = yr;
+      // chain 2, elements i+8 to i+15
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+12]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_fmsub_ps(re, c2, _mm256_mul_ps(im, s2));
+      yi = _mm256_fmadd_ps(re, s2, _mm256_mul_ps(im, c2));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+          _mm256_unpackhi_ps(yr, yi));
+      yr = _mm256_fmsub_ps(c2, phir, _mm256_mul_ps(s2, phii));
+      s2 = _mm256_fmadd_ps(c2, phii, _mm256_mul_ps(s2, phir));
+      c2 = yr;
+      // chain 3, elements i+16 to i+23
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+16]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+20]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_fmsub_ps(re, c3, _mm256_mul_ps(im, s3));
+      yi = _mm256_fmadd_ps(re, s3, _mm256_mul_ps(im, c3));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+16]),
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+20]),
+          _mm256_unpackhi_ps(yr, yi));
+      yr = _mm256_fmsub_ps(c3, phir, _mm256_mul_ps(s3, phii));
+      s3 = _mm256_fmadd_ps(c3, phii, _mm256_mul_ps(s3, phir));
+      c3 = yr;
+      // chain 4, elements i+24 to i+31
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+24]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+28]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_fmsub_ps(re, c4, _mm256_mul_ps(im, s4));
+      yi = _mm256_fmadd_ps(re, s4, _mm256_mul_ps(im, c4));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+24]),
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+28]),
+          _mm256_unpackhi_ps(yr, yi));
+      yr = _mm256_fmsub_ps(c4, phir, _mm256_mul_ps(s4, phii));
+      s4 = _mm256_fmadd_ps(c4, phii, _mm256_mul_ps(s4, phir));
+      c4 = yr;
+    }
+    // handle the remaining 0-31 elements, 8 at a time: c1, s1 have the
+    // phasors of the next 8, c2, s2 the 8 after that, and so on
+    for(; i<len; i+=8)
+    {
+      // masks for the two registers of 4 elements (2 floats per complex, so
+      // double the counts; whole registers until the last block, and a zero
+      // mask, which reads and writes nothing, past the end)
+      const int n = std::min(len-i, 8);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Br0,Br1,Br4,Br5|Br2,...,Br7]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Bi0,Bi1,Bi4,Bi5|Bi2,...,Bi7]
+      yr = _mm256_fmsub_ps(re, c1, _mm256_mul_ps(im, s1)); // Br*Ar-Bi*Ai
+      yi = _mm256_fmadd_ps(re, s1, _mm256_mul_ps(im, c1)); // Br*Ai+Bi*Ar
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(yr, yi));
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1,
+            _mm256_unpacklo_ps(c1, s1));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2,
+            _mm256_unpackhi_ps(c1, s1));
+      }
+      // move the next chain's phasors down
+      c1 = c2; s1 = s2;
+      c2 = c3; s2 = s3;
+      c3 = c4; s3 = s4;
+    }
+    return;
+  }
+  #endif // end AVX2
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void _tuneKernel(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return;
+    __m256 ld, sh, re, im;
+    __m256 pha1, pha2, pha3, pha4; // accumulator phasors, complex, 4 chains
+    __m256 phir, phii; // incrementer phasor, real and imaginary parts separate
+    // setup the accumulator phasors of elements 0-15 (pha1 has elements 0-3,
+    // pha2 4-7, pha3 8-11 and pha4 12-15), from their phases in double
+    // (sincosCycDblAvx removes the nearest quarter cycle in double).  Each
+    // call takes 8 elements, in the order unpacklo and unpackhi interleave
+    // into the registers of the first 4 and the next 4
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d pd, pe;
+    // phInit + k*phIncr, k in [0, 7] (element 0 keeps phInit, so it stays
+    // finite for a NaN or INF phIncr as in the default version)
+    pd = _mm256_add_pd(_mm256_mul_pd(k1, dIncr), dInit);
+    pd = _mm256_blend_pd(pd, dInit, 0x1);
+    pe = _mm256_add_pd(_mm256_mul_pd(k2, dIncr), dInit);
+    TRIG::sincosCycDblAvx(pd, pe, sh, re); // sh = sin, re = cos
+    // interleave real and imaginary parts of accumulator (cos and sin)
+    pha1 = _mm256_unpacklo_ps(re, sh); // elements 0-3
+    pha2 = _mm256_unpackhi_ps(re, sh); // elements 4-7
+    // phInit + k*phIncr, k in [8, 15]
+    pd = _mm256_add_pd(_mm256_mul_pd(k3, dIncr), dInit);
+    pe = _mm256_add_pd(_mm256_mul_pd(k4, dIncr), dInit);
+    TRIG::sincosCycDblAvx(pd, pe, sh, re);
+    pha3 = _mm256_unpacklo_ps(re, sh); // elements 8-11
+    pha4 = _mm256_unpackhi_ps(re, sh); // elements 12-15
+    // setup incrementer phasor e^(j*16*phIncr), real and imaginary parts
+    pd = _mm256_set1_pd(16.0*phIncr);
+    TRIG::sincosCycDblAvx(pd, pd, phii, phir);
+    // main loop
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements, 4 per chain
+    {
+      // output the accumulator phasors of elements i to i+15 if requested
+      // (phOut is the same on every pass, so the branch predicts well)
+      if(phOut)
+      {
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]), pha2);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha3);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]), pha4);
+      }
+      // chain 1, elements i to i+3
+      // note we split the load register into real/imag and shuffle the
+      // accumulator so we can use the shuffled accumulator for the increment
+      // stage as well
+      ld = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));  // B
+      sh = _mm256_shuffle_ps(pha1, pha1, 0xb1); // [Ai0,Ar0,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld = _mm256_addsub_ps(_mm256_mul_ps(re, pha1), im);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld);
+      // now increment the accumulator phasor, same as above but the
+      // incrementer is already split into re and im parts
+      im = _mm256_mul_ps(sh, phii);
+      pha1 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha1), im);
+      // chain 2, elements i+4 to i+7
+      ld = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      sh = _mm256_shuffle_ps(pha2, pha2, 0xb1);
+      im = _mm256_movehdup_ps(ld);
+      re = _mm256_moveldup_ps(ld);
+      im = _mm256_mul_ps(sh, im);
+      ld = _mm256_addsub_ps(_mm256_mul_ps(re, pha2), im);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld);
+      im = _mm256_mul_ps(sh, phii);
+      pha2 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha2), im);
+      // chain 3, elements i+8 to i+11
+      ld = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      sh = _mm256_shuffle_ps(pha3, pha3, 0xb1);
+      im = _mm256_movehdup_ps(ld);
+      re = _mm256_moveldup_ps(ld);
+      im = _mm256_mul_ps(sh, im);
+      ld = _mm256_addsub_ps(_mm256_mul_ps(re, pha3), im);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld);
+      im = _mm256_mul_ps(sh, phii);
+      pha3 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha3), im);
+      // chain 4, elements i+12 to i+15
+      ld = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+12]));
+      sh = _mm256_shuffle_ps(pha4, pha4, 0xb1);
+      im = _mm256_movehdup_ps(ld);
+      re = _mm256_moveldup_ps(ld);
+      im = _mm256_mul_ps(sh, im);
+      ld = _mm256_addsub_ps(_mm256_mul_ps(re, pha4), im);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]), ld);
+      im = _mm256_mul_ps(sh, phii);
+      pha4 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha4), im);
+    }
+    // handle the remaining 0-15 elements: pha1 has the phasors of the next
+    // 4, pha2 the 4 after that, and so on
+    for(; i<len; i+=4)
+    {
+      // each complex is 2 floats, so double the count (a whole register
+      // until the last one)
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(len-i, 4)<<1]));
+      ld = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk);
+      sh = _mm256_shuffle_ps(pha1, pha1, 0xb1); // [Ai0,Ar0,...,Ai3,Ar3]
+      im = _mm256_movehdup_ps(ld); // [Bi0,Bi0,Bi1,Bi1,...,Bi3,Bi3]
+      re = _mm256_moveldup_ps(ld); // [Br0,Br0,Br1,Br1,...,Br3,Br3]
+      im = _mm256_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai3*Bi3,Ar3*Bi3]
+      ld = _mm256_addsub_ps(_mm256_mul_ps(re, pha1), im);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk, ld);
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk, pha1);
+      }
+      // move the next chain's phasors down
+      pha1 = pha2;
+      pha2 = pha3;
+      pha3 = pha4;
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void _tuneKernel(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    float reIncr, imIncr;   // per sample phase increment phasor
+    float reAccum, imAccum; // current NCO phasor (accumulator)
+    float reOut, imOut;     // temp variables to avoid overwriting when in=out
+    // note: sincosf gives (sin, cos), and whole cycles are removed in double
+    // first so that a large phase keeps its accuracy
+    sincosf(static_cast<float>(M_TWO_PI*fmod(phInit, 1.0)), &imAccum,
+        &reAccum);
+    sincosf(static_cast<float>(M_TWO_PI*fmod(phIncr, 1.0)), &imIncr,
+        &reIncr);
+    for(int i=0; i<len; ++i)
+    {
+      if(phOut) // output the accumulator phasor if requested
+      {
+        phOut[i].real(reAccum);
+        phOut[i].imag(imAccum);
+      }
+      reOut = in[i].real()*reAccum-in[i].imag()*imAccum;
+      imOut = in[i].real()*imAccum+in[i].imag()*reAccum;
+      out[i].real(reOut);
+      out[i].imag(imOut);
+      reOut = reAccum*reIncr-imAccum*imIncr;
+      imAccum = reAccum*imIncr+imAccum*reIncr;
+      reAccum = reOut;
+    }
+    return;
+  }
+
+  // NCO tune of real data via complex multiply, phase in cycles, outputs
+  // complex phasor if phOut is not null
+  #if !defined(DISABLE_AVX512) // AVX512
+  __attribute__((__target__("avx512f")))
+  inline void _tuneKernel(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of 32 outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them all.  The blocks are counted from element 0, so the last one,
+    // which comes first, may be partial
+    __m512 ld1, ld2, sh, re, im;
+    __m512 pha1, pha2, pha3, pha4; // accumulator phasors, complex, 4 chains
+    __m512 phir, phii; // incrementer phasor, real and imaginary parts separate
+    // indexes that duplicate each of the first 8 and of the last 8 of 16 real
+    // inputs, [x0,x0,x1,x1,...,x7,x7] and [x8,x8,x9,x9,...,x15,x15]
+    const __m512i dlo = _mm512_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
+        6, 6, 7, 7);
+    const __m512i dhi = _mm512_setr_epi32(8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13, 14, 14, 15, 15);
+    int i = ((len-1)>>5)<<5; // start of the last block
+    // setup the accumulator phasors of elements i to i+31 (pha1 has elements
+    // i to i+7, pha2 i+8 to i+15, pha3 i+16 to i+23 and pha4 i+24 to i+31),
+    // from their phases in double (sincosCycDbl512 removes the nearest
+    // quarter cycle in double).  Each call takes 16 elements, in the order
+    // unpacklo and unpackhi interleave into the registers of the first 8 and
+    // the next 8
+    const __m512d k1 = _mm512_setr_pd( 0,  1,  8,  9,  2,  3, 10, 11);
+    const __m512d k2 = _mm512_setr_pd( 4,  5, 12, 13,  6,  7, 14, 15);
+    const __m512d k3 = _mm512_setr_pd(16, 17, 24, 25, 18, 19, 26, 27);
+    const __m512d k4 = _mm512_setr_pd(20, 21, 28, 29, 22, 23, 30, 31);
+    const __m512d dBase = _mm512_set1_pd(static_cast<double>(i));
+    const __m512d dInit = _mm512_set1_pd(phInit);
+    const __m512d dIncr = _mm512_set1_pd(phIncr);
+    __m512d pd, pe;
+    // phInit + k*phIncr, k in [i, i+15]
+    pd = _mm512_fmadd_pd(_mm512_add_pd(k1, dBase), dIncr, dInit);
+    pe = _mm512_fmadd_pd(_mm512_add_pd(k2, dBase), dIncr, dInit);
+    TRIG::sincosCycDbl512(pd, pe, sh, re); // sh = sin, re = cos
+    // interleave real and imaginary parts of accumulator (cos and sin)
+    pha1 = _mm512_unpacklo_ps(re, sh); // elements i to i+7
+    pha2 = _mm512_unpackhi_ps(re, sh); // elements i+8 to i+15
+    // phInit + k*phIncr, k in [i+16, i+31]
+    pd = _mm512_fmadd_pd(_mm512_add_pd(k3, dBase), dIncr, dInit);
+    pe = _mm512_fmadd_pd(_mm512_add_pd(k4, dBase), dIncr, dInit);
+    TRIG::sincosCycDbl512(pd, pe, sh, re);
+    pha3 = _mm512_unpacklo_ps(re, sh); // elements i+16 to i+23
+    pha4 = _mm512_unpackhi_ps(re, sh); // elements i+24 to i+31
+    // setup incrementer phasor e^(-j*32*phIncr), which steps back one block,
+    // real and imaginary parts
+    pd = _mm512_set1_pd(-32.0*phIncr);
+    TRIG::sincosCycDbl512(pd, pd, phii, phir);
+    // the last block, 1 to 32 elements: its input is read as 2 registers of
+    // 16 floats masked to the elements it has, and each chain's output mask
+    // selects twice the number of elements of the chain (0 to 8; 2 floats per
+    // complex output), where a zero mask writes nothing
+    const int n = len-i;
+    const int n4 = std::min(std::max(n-24, 0), 8);
+    const int n3 = std::min(std::max(n-16, 0), 8);
+    const int n2 = std::min(std::max(n-8, 0), 8);
+    const int n1 = std::min(n, 8);
+    ld1 = _mm512_maskz_loadu_ps(mask16(std::min(std::max(n-16, 0), 16)),
+        &in[i+16]);                                   // elements i+16 to i+31
+    ld2 = _mm512_maskz_loadu_ps(mask16(std::min(n, 16)), &in[i]); // i to i+15
+    // output the accumulator phasors of elements i to len-1 if requested
+    if(phOut)
+    {
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i]),
+          mask16(n1<<1), pha1);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]),
+          mask16(n2<<1), pha2);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i+16]),
+          mask16(n3<<1), pha3);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i+24]),
+          mask16(n4<<1), pha4);
+    }
+    // chain 4, elements i+24 to i+31
+    // note we duplicate each real input, so it multiplies the interleaved
+    // real and imaginary parts of the accumulator, and shuffle the
+    // accumulator for the increment stage
+    re = _mm512_permutexvar_ps(dhi, ld1); // [x0,x0,x1,x1,...,x7,x7]
+    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+24]),
+        mask16(n4<<1), _mm512_mul_ps(re, pha4));
+    sh = _mm512_shuffle_ps(pha4, pha4, 0xb1); // [Ai0,Ar0,...,Ai7,Ar7]
+    im = _mm512_mul_ps(sh, phii);
+    pha4 = _mm512_fmaddsub_ps(phir, pha4, im);
+    // chain 3, elements i+16 to i+23
+    re = _mm512_permutexvar_ps(dlo, ld1);
+    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+16]),
+        mask16(n3<<1), _mm512_mul_ps(re, pha3));
+    sh = _mm512_shuffle_ps(pha3, pha3, 0xb1);
+    im = _mm512_mul_ps(sh, phii);
+    pha3 = _mm512_fmaddsub_ps(phir, pha3, im);
+    // chain 2, elements i+8 to i+15
+    re = _mm512_permutexvar_ps(dhi, ld2);
+    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+        mask16(n2<<1), _mm512_mul_ps(re, pha2));
+    sh = _mm512_shuffle_ps(pha2, pha2, 0xb1);
+    im = _mm512_mul_ps(sh, phii);
+    pha2 = _mm512_fmaddsub_ps(phir, pha2, im);
+    // chain 1, elements i to i+7
+    re = _mm512_permutexvar_ps(dlo, ld2);
+    _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+        mask16(n1<<1), _mm512_mul_ps(re, pha1));
+    sh = _mm512_shuffle_ps(pha1, pha1, 0xb1);
+    im = _mm512_mul_ps(sh, phii);
+    pha1 = _mm512_fmaddsub_ps(phir, pha1, im);
+    // main loop, the whole blocks from the last but one to the first
+    for(i-=32; i>=0; i-=32) // process 32 real elements, 8 per chain
+    {
+      // output the accumulator phasors of elements i to i+31 if requested
+      // (phOut is the same on every pass, so the branch predicts well)
+      if(phOut)
+      {
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha2);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+16]), pha3);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+24]), pha4);
+      }
+      // the block's input, as 2 registers of 16 floats
+      ld1 = _mm512_loadu_ps(&in[i+16]); // elements i+16 to i+31
+      ld2 = _mm512_loadu_ps(&in[i]);    // elements i to i+15
+      // chain 4, elements i+24 to i+31
+      re = _mm512_permutexvar_ps(dhi, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+24]),
+          _mm512_mul_ps(re, pha4));
+      sh = _mm512_shuffle_ps(pha4, pha4, 0xb1);
+      im = _mm512_mul_ps(sh, phii);
+      pha4 = _mm512_fmaddsub_ps(phir, pha4, im);
+      // chain 3, elements i+16 to i+23
+      re = _mm512_permutexvar_ps(dlo, ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+16]),
+          _mm512_mul_ps(re, pha3));
+      sh = _mm512_shuffle_ps(pha3, pha3, 0xb1);
+      im = _mm512_mul_ps(sh, phii);
+      pha3 = _mm512_fmaddsub_ps(phir, pha3, im);
+      // chain 2, elements i+8 to i+15
+      re = _mm512_permutexvar_ps(dhi, ld2);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_mul_ps(re, pha2));
+      sh = _mm512_shuffle_ps(pha2, pha2, 0xb1);
+      im = _mm512_mul_ps(sh, phii);
+      pha2 = _mm512_fmaddsub_ps(phir, pha2, im);
+      // chain 1, elements i to i+7
+      re = _mm512_permutexvar_ps(dlo, ld2);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_mul_ps(re, pha1));
+      sh = _mm512_shuffle_ps(pha1, pha1, 0xb1);
+      im = _mm512_mul_ps(sh, phii);
+      pha1 = _mm512_fmaddsub_ps(phir, pha1, im);
+    }
+    return;
+  }
+  #endif // end AVX512
+  #if !defined(DISABLE_AVX2) // AVX2
+  __attribute__((__target__("avx2,fma")))
+  inline void _tuneKernel(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return;
+    // from the end of the buffer to the start as in the AVX-512 version.
+    // As in the complex AVX2 version, the accumulator phasors keep their
+    // real (cos) and imaginary (sin) parts in separate registers, in the lane
+    // order 0,1,4,5,2,3,6,7 of each chain: a permute of the input matches
+    // it, and unpacklo/unpackhi interleave the products back into elements
+    // 0-3 and 4-7
+    __m256 ld, re, im;
+    // accumulator phasors, 4 chains of 8 elements, cos and sin separate
+    __m256 c1, s1, c2, s2, c3, s3, c4, s4;
+    __m256 phir, phii; // incrementer phasor, real and imaginary parts
+    int i = ((len-1)>>5)<<5; // start of the last block of 32 elements
+    // setup the accumulator phasors of elements i to i+31 (c1, s1 have
+    // elements i to i+7, c2, s2 i+8 to i+15 and so on), from their phases in
+    // double (sincosCycDblAvx2 removes the nearest quarter cycle in double).
+    // Each call takes lanes 0-3 from its first argument and lanes 4-7 from
+    // its second
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d k5 = _mm256_setr_pd(16, 17, 20, 21);
+    const __m256d k6 = _mm256_setr_pd(18, 19, 22, 23);
+    const __m256d k7 = _mm256_setr_pd(24, 25, 28, 29);
+    const __m256d k8 = _mm256_setr_pd(26, 27, 30, 31);
+    const __m256d dBase = _mm256_set1_pd(static_cast<double>(i));
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d pd, pe;
+    // phInit + k*phIncr, k in [i, i+7]
+    pd = _mm256_fmadd_pd(_mm256_add_pd(k1, dBase), dIncr, dInit);
+    pe = _mm256_fmadd_pd(_mm256_add_pd(k2, dBase), dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s1, c1);
+    // phInit + k*phIncr, k in [i+8, i+15]
+    pd = _mm256_fmadd_pd(_mm256_add_pd(k3, dBase), dIncr, dInit);
+    pe = _mm256_fmadd_pd(_mm256_add_pd(k4, dBase), dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s2, c2);
+    // phInit + k*phIncr, k in [i+16, i+23]
+    pd = _mm256_fmadd_pd(_mm256_add_pd(k5, dBase), dIncr, dInit);
+    pe = _mm256_fmadd_pd(_mm256_add_pd(k6, dBase), dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s3, c3);
+    // phInit + k*phIncr, k in [i+24, i+31]
+    pd = _mm256_fmadd_pd(_mm256_add_pd(k7, dBase), dIncr, dInit);
+    pe = _mm256_fmadd_pd(_mm256_add_pd(k8, dBase), dIncr, dInit);
+    TRIG::sincosCycDblAvx2(pd, pe, s4, c4);
+    // setup incrementer phasor e^(-j*32*phIncr), which steps back one block,
+    // real and imaginary parts
+    pd = _mm256_set1_pd(-32.0*phIncr);
+    TRIG::sincosCycDblAvx2(pd, pd, phii, phir);
+    // the last block, 1 to 32 elements, with the number of elements of each
+    // chain (0 to 8) in its masks: the input mask selects that many floats,
+    // the output masks twice as many (2 floats per complex output, the
+    // first 4 elements in one register and the rest in the other), and a
+    // zero mask reads and writes nothing
+    const int n = len-i;
+    int m;
+    __m256i mki, mk1, mk2;
+    // chain 4, elements i+24 to i+31
+    m = std::min(std::max(n-24, 0), 8);
+    mki = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m]));
+    mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::min(m, 4)<<1]));
+    mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::max(m-4, 0)<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+24]), mk1,
+          _mm256_unpacklo_ps(c4, s4));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+28]), mk2,
+          _mm256_unpackhi_ps(c4, s4));
+    }
+    ld = _mm256_maskload_ps(&in[i+24], mki);
+    // [x0,x1,x4,x5|x2,x3,x6,x7], the lane order of the phasors
+    ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+    re = _mm256_mul_ps(ld, c4);
+    im = _mm256_mul_ps(ld, s4);
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+24]), mk1,
+        _mm256_unpacklo_ps(re, im));
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+28]), mk2,
+        _mm256_unpackhi_ps(re, im));
+    // increment the accumulator phasor
+    re = _mm256_fmsub_ps(c4, phir, _mm256_mul_ps(s4, phii));
+    s4 = _mm256_fmadd_ps(c4, phii, _mm256_mul_ps(s4, phir));
+    c4 = re;
+    // chain 3, elements i+16 to i+23
+    m = std::min(std::max(n-16, 0), 8);
+    mki = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m]));
+    mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::min(m, 4)<<1]));
+    mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::max(m-4, 0)<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+16]), mk1,
+          _mm256_unpacklo_ps(c3, s3));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+20]), mk2,
+          _mm256_unpackhi_ps(c3, s3));
+    }
+    ld = _mm256_maskload_ps(&in[i+16], mki);
+    ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+    re = _mm256_mul_ps(ld, c3);
+    im = _mm256_mul_ps(ld, s3);
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+16]), mk1,
+        _mm256_unpacklo_ps(re, im));
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+20]), mk2,
+        _mm256_unpackhi_ps(re, im));
+    re = _mm256_fmsub_ps(c3, phir, _mm256_mul_ps(s3, phii));
+    s3 = _mm256_fmadd_ps(c3, phii, _mm256_mul_ps(s3, phir));
+    c3 = re;
+    // chain 2, elements i+8 to i+15
+    m = std::min(std::max(n-8, 0), 8);
+    mki = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m]));
+    mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::min(m, 4)<<1]));
+    mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::max(m-4, 0)<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk1,
+          _mm256_unpacklo_ps(c2, s2));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk2,
+          _mm256_unpackhi_ps(c2, s2));
+    }
+    ld = _mm256_maskload_ps(&in[i+8], mki);
+    ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+    re = _mm256_mul_ps(ld, c2);
+    im = _mm256_mul_ps(ld, s2);
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk1,
+        _mm256_unpacklo_ps(re, im));
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk2,
+        _mm256_unpackhi_ps(re, im));
+    re = _mm256_fmsub_ps(c2, phir, _mm256_mul_ps(s2, phii));
+    s2 = _mm256_fmadd_ps(c2, phii, _mm256_mul_ps(s2, phir));
+    c2 = re;
+    // chain 1, elements i to i+7
+    m = std::min(n, 8);
+    mki = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m]));
+    mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::min(m, 4)<<1]));
+    mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+        masks[std::max(m-4, 0)<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1,
+          _mm256_unpacklo_ps(c1, s1));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2,
+          _mm256_unpackhi_ps(c1, s1));
+    }
+    ld = _mm256_maskload_ps(&in[i], mki);
+    ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+    re = _mm256_mul_ps(ld, c1);
+    im = _mm256_mul_ps(ld, s1);
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+        _mm256_unpacklo_ps(re, im));
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+        _mm256_unpackhi_ps(re, im));
+    re = _mm256_fmsub_ps(c1, phir, _mm256_mul_ps(s1, phii));
+    s1 = _mm256_fmadd_ps(c1, phii, _mm256_mul_ps(s1, phir));
+    c1 = re;
+    // main loop, the whole blocks from the last but one to the first
+    for(i-=32; i>=0; i-=32) // process 32 real elements, 8 per chain
+    {
+      // output the accumulator phasors of elements i to i+31 if requested,
+      // interleaved again (phOut is the same on every pass, so the branch
+      // predicts well)
+      if(phOut)
+      {
+        float * const ph = reinterpret_cast<float *>(&phOut[i]);
+        _mm256_storeu_ps(ph, _mm256_unpacklo_ps(c1, s1));
+        _mm256_storeu_ps(ph+8, _mm256_unpackhi_ps(c1, s1));
+        _mm256_storeu_ps(ph+16, _mm256_unpacklo_ps(c2, s2));
+        _mm256_storeu_ps(ph+24, _mm256_unpackhi_ps(c2, s2));
+        _mm256_storeu_ps(ph+32, _mm256_unpacklo_ps(c3, s3));
+        _mm256_storeu_ps(ph+40, _mm256_unpackhi_ps(c3, s3));
+        _mm256_storeu_ps(ph+48, _mm256_unpacklo_ps(c4, s4));
+        _mm256_storeu_ps(ph+56, _mm256_unpackhi_ps(c4, s4));
+      }
+      // chain 4, elements i+24 to i+31
+      // permute the input into the lane order of the phasors
+      ld = _mm256_loadu_ps(&in[i+24]);
+      ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+      re = _mm256_mul_ps(ld, c4);
+      im = _mm256_mul_ps(ld, s4);
+      // interleave the real and imaginary parts: unpacklo gives elements 0-3
+      // and unpackhi elements 4-7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+24]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+28]),
+          _mm256_unpackhi_ps(re, im));
+      // now increment the accumulator phasor, a complex multiply with the
+      // incrementer
+      re = _mm256_fmsub_ps(c4, phir, _mm256_mul_ps(s4, phii));
+      s4 = _mm256_fmadd_ps(c4, phii, _mm256_mul_ps(s4, phir));
+      c4 = re;
+      // chain 3, elements i+16 to i+23
+      ld = _mm256_loadu_ps(&in[i+16]);
+      ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+      re = _mm256_mul_ps(ld, c3);
+      im = _mm256_mul_ps(ld, s3);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+16]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+20]),
+          _mm256_unpackhi_ps(re, im));
+      re = _mm256_fmsub_ps(c3, phir, _mm256_mul_ps(s3, phii));
+      s3 = _mm256_fmadd_ps(c3, phii, _mm256_mul_ps(s3, phir));
+      c3 = re;
+      // chain 2, elements i+8 to i+15
+      ld = _mm256_loadu_ps(&in[i+8]);
+      ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+      re = _mm256_mul_ps(ld, c2);
+      im = _mm256_mul_ps(ld, s2);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+          _mm256_unpackhi_ps(re, im));
+      re = _mm256_fmsub_ps(c2, phir, _mm256_mul_ps(s2, phii));
+      s2 = _mm256_fmadd_ps(c2, phii, _mm256_mul_ps(s2, phir));
+      c2 = re;
+      // chain 1, elements i to i+7
+      ld = _mm256_loadu_ps(&in[i]);
+      ld = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ld), 0xd8));
+      re = _mm256_mul_ps(ld, c1);
+      im = _mm256_mul_ps(ld, s1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(re, im));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(re, im));
+      re = _mm256_fmsub_ps(c1, phir, _mm256_mul_ps(s1, phii));
+      s1 = _mm256_fmadd_ps(c1, phii, _mm256_mul_ps(s1, phir));
+      c1 = re;
+    }
+    return;
+  }
+  #endif // end AVX2
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void _tuneKernel(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return;
+    // from the end of the buffer to the start as in the AVX-512 version, in
+    // blocks of 16 elements counted from element 0
+    __m256 sh, re, im;
+    __m256 pha1, pha2, pha3, pha4; // accumulator phasors, complex, 4 chains
+    __m256 phir, phii; // incrementer phasor, real and imaginary parts separate
+    // index that duplicates each of 4 real inputs held in both halves of a
+    // register (AVX has no permute across the halves),
+    // [x0,x0,x1,x1|x2,x2,x3,x3]
+    const __m256i dup = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
+    int i = ((len-1)>>4)<<4; // start of the last block
+    // setup the accumulator phasors of elements i to i+15 (pha1 has elements
+    // i to i+3, pha2 i+4 to i+7, pha3 i+8 to i+11 and pha4 i+12 to i+15),
+    // from their phases in double (sincosCycDblAvx removes the nearest
+    // quarter cycle in double).  Each call takes 8 elements, in the order
+    // unpacklo and unpackhi interleave into the registers of the first 4 and
+    // the next 4
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d dBase = _mm256_set1_pd(static_cast<double>(i));
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d pd, pe;
+    // phInit + k*phIncr, k in [i, i+7]
+    pd = _mm256_add_pd(_mm256_mul_pd(_mm256_add_pd(k1, dBase), dIncr), dInit);
+    pe = _mm256_add_pd(_mm256_mul_pd(_mm256_add_pd(k2, dBase), dIncr), dInit);
+    TRIG::sincosCycDblAvx(pd, pe, sh, re); // sh = sin, re = cos
+    // interleave real and imaginary parts of accumulator (cos and sin)
+    pha1 = _mm256_unpacklo_ps(re, sh); // elements i to i+3
+    pha2 = _mm256_unpackhi_ps(re, sh); // elements i+4 to i+7
+    // phInit + k*phIncr, k in [i+8, i+15]
+    pd = _mm256_add_pd(_mm256_mul_pd(_mm256_add_pd(k3, dBase), dIncr), dInit);
+    pe = _mm256_add_pd(_mm256_mul_pd(_mm256_add_pd(k4, dBase), dIncr), dInit);
+    TRIG::sincosCycDblAvx(pd, pe, sh, re);
+    pha3 = _mm256_unpacklo_ps(re, sh); // elements i+8 to i+11
+    pha4 = _mm256_unpackhi_ps(re, sh); // elements i+12 to i+15
+    // setup incrementer phasor e^(-j*16*phIncr), which steps back one block,
+    // real and imaginary parts
+    pd = _mm256_set1_pd(-16.0*phIncr);
+    TRIG::sincosCycDblAvx(pd, pd, phii, phir);
+    // the last block, 1 to 16 elements, with the number of elements of each
+    // chain (0 to 4) in its masks: the input mask selects that many floats,
+    // the output mask twice as many (2 floats per complex output), and a
+    // zero mask reads and writes nothing
+    const int n = len-i;
+    int m;
+    __m128 x;
+    __m256i mk;
+    // chain 4, elements i+12 to i+15
+    m = std::min(std::max(n-12, 0), 4);
+    x = _mm_maskload_ps(&in[i+12], _mm_load_si128(
+        reinterpret_cast<__m128i const *>(masks[m])));
+    // note we duplicate each real input, so it multiplies the interleaved
+    // real and imaginary parts of the accumulator, and shuffle the
+    // accumulator for the increment stage
+    re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+        x, 1), dup);                 // [x0,x0,x1,x1|x2,x2,x3,x3]
+    mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk, pha4);
+    }
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk,
+        _mm256_mul_ps(re, pha4));
+    sh = _mm256_shuffle_ps(pha4, pha4, 0xb1); // [Ai0,Ar0,...,Ai3,Ar3]
+    im = _mm256_mul_ps(sh, phii);
+    pha4 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha4), im);
+    // chain 3, elements i+8 to i+11
+    m = std::min(std::max(n-8, 0), 4);
+    x = _mm_maskload_ps(&in[i+8], _mm_load_si128(
+        reinterpret_cast<__m128i const *>(masks[m])));
+    re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+        x, 1), dup);
+    mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk, pha3);
+    }
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk,
+        _mm256_mul_ps(re, pha3));
+    sh = _mm256_shuffle_ps(pha3, pha3, 0xb1);
+    im = _mm256_mul_ps(sh, phii);
+    pha3 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha3), im);
+    // chain 2, elements i+4 to i+7
+    m = std::min(std::max(n-4, 0), 4);
+    x = _mm_maskload_ps(&in[i+4], _mm_load_si128(
+        reinterpret_cast<__m128i const *>(masks[m])));
+    re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+        x, 1), dup);
+    mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk, pha2);
+    }
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk,
+        _mm256_mul_ps(re, pha2));
+    sh = _mm256_shuffle_ps(pha2, pha2, 0xb1);
+    im = _mm256_mul_ps(sh, phii);
+    pha2 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha2), im);
+    // chain 1, elements i to i+3
+    m = std::min(n, 4);
+    x = _mm_maskload_ps(&in[i], _mm_load_si128(
+        reinterpret_cast<__m128i const *>(masks[m])));
+    re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+        x, 1), dup);
+    mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(masks[m<<1]));
+    if(phOut)
+    {
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk, pha1);
+    }
+    _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk,
+        _mm256_mul_ps(re, pha1));
+    sh = _mm256_shuffle_ps(pha1, pha1, 0xb1);
+    im = _mm256_mul_ps(sh, phii);
+    pha1 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha1), im);
+    // main loop, the whole blocks from the last but one to the first
+    for(i-=16; i>=0; i-=16) // process 16 real elements, 4 per chain
+    {
+      // output the accumulator phasors of elements i to i+15 if requested
+      // (phOut is the same on every pass, so the branch predicts well)
+      if(phOut)
+      {
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]), pha2);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha3);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]), pha4);
+      }
+      // chain 4, elements i+12 to i+15
+      // (broadcast_ps loads the 4 inputs into both halves of the register)
+      re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in[i+12])), dup);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+          _mm256_mul_ps(re, pha4));
+      sh = _mm256_shuffle_ps(pha4, pha4, 0xb1);
+      im = _mm256_mul_ps(sh, phii);
+      pha4 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha4), im);
+      // chain 3, elements i+8 to i+11
+      re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in[i+8])), dup);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm256_mul_ps(re, pha3));
+      sh = _mm256_shuffle_ps(pha3, pha3, 0xb1);
+      im = _mm256_mul_ps(sh, phii);
+      pha3 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha3), im);
+      // chain 2, elements i+4 to i+7
+      re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in[i+4])), dup);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_mul_ps(re, pha2));
+      sh = _mm256_shuffle_ps(pha2, pha2, 0xb1);
+      im = _mm256_mul_ps(sh, phii);
+      pha2 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha2), im);
+      // chain 1, elements i to i+3
+      re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+          reinterpret_cast<__m128 const *>(&in[i])), dup);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_mul_ps(re, pha1));
+      sh = _mm256_shuffle_ps(pha1, pha1, 0xb1);
+      im = _mm256_mul_ps(sh, phii);
+      pha1 = _mm256_addsub_ps(_mm256_mul_ps(phir, pha1), im);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void _tuneKernel(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    float reIncr, imIncr;   // per sample phase increment phasor
+    float reAccum, imAccum; // current NCO phasor (accumulator)
+    float reOut, imOut;     // temp variables to avoid overwriting when in=out
+    // note: sincosf gives (sin, cos), and whole cycles are removed in double
+    // first so that a large phase keeps its accuracy.  The loop runs
+    // backwards, so the phasor starts at the last element's phase and steps
+    // back by phIncr
+    sincosf(static_cast<float>(M_TWO_PI*fmod(phInit+(len-1)*phIncr, 1.0)),
+        &imAccum, &reAccum);
+    sincosf(static_cast<float>(-M_TWO_PI*fmod(phIncr, 1.0)), &imIncr,
+        &reIncr);
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+       if(phOut) // output the accumulator phasor if requested
+      {
+        phOut[i].real(reAccum);
+        phOut[i].imag(imAccum);
+      }
+      reOut = in[i]*reAccum;
+      imOut = in[i]*imAccum;
+      out[i].real(reOut);
+      out[i].imag(imOut);
+      reOut = reAccum*reIncr-imAccum*imIncr;
+      imAccum = reAccum*imIncr+imAccum*reIncr;
+      reAccum = reOut;
+    }
+    return;
+  }
+
+  // NCO tune of complex data via complex multiply, phase in radians,
+  // no phasor output
+  inline double tune(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, RAD_TO_CYC*phInit, RAD_TO_CYC*phIncr, out, nullptr);
+    return fmod(phInit+len*phIncr, M_TWO_PI);
+  }
+  
+  // NCO tune of real data via complex multiply, phase in radians,
+  // no phasor output
+  inline double tune(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, RAD_TO_CYC*phInit, RAD_TO_CYC*phIncr, out, nullptr);
+    return fmod(phInit+len*phIncr, M_TWO_PI);
+  }
+  
+  // NCO tune of complex data via complex multiply, phase in radians, outputs
+  // complex phasor
+  inline double tune(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, RAD_TO_CYC*phInit, RAD_TO_CYC*phIncr, out, phOut);
+    return fmod(phInit+len*phIncr, M_TWO_PI);
+  }
+
+  // NCO tune of real data via complex multiply, phase in radians, outputs
+  // complex phasor
+  inline double tune(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, RAD_TO_CYC*phInit, RAD_TO_CYC*phIncr, out, phOut);
+    return fmod(phInit+len*phIncr, M_TWO_PI);
+  }
+
+  // NCO tune of complex data via complex multiply, phase in cycles,
+  // no phasor output
+  inline double tunecx(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, phInit, phIncr, out, nullptr);
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  
+  // NCO tune of real data via complex multiply, phase in cycles,
+  // no phasor output
+  inline double tunecx(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, phInit, phIncr, out, nullptr);
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  
+  // NCO tune of complex data via complex multiply, phase in cycles, outputs
+  // complex phasor
+  inline double tunecx(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, phInit, phIncr, out, phOut);
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+
+  // NCO tune of real data via complex multiply, phase in cycles, outputs
+  // complex phasor
+  inline double tunecx(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    _tuneKernel(in, len, phInit, phIncr, out, phOut);
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+
+  // NCO tune of complex data via direct sin/cos computation, phase in cycles,
+  // outputs complex phasor if phOut is not null.  In the SIMD versions, each
+  // element's phasor is the base phasor of its block of 16 elements (from
+  // the double phase of the block's first element) times the phasor of its
+  // offset k in the block, from a table of e^(j*2*pi*k*phIncr), k = 0 to 15,
+  // made once per call: a complex multiply per register instead of a sin/cos
+  // per element (2-3.8x faster).  The bases are computed 16 (AVX-512) or 8
+  // at a time, one group of blocks per pass of the outer loop, and the last
+  // partial block takes its phasors directly from their double phases.
+  // Note: the table's rounding errors repeat every 16 elements, so they can
+  // show up as spurs at multiples of fs/16 (at most about -136 dBc) rather
+  // than as a noise floor
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    __m512 ld, sh, re, im, br, bi;
+    __m512 tab1, tab2, tsw1, tsw2; // offset table, and with re/im swapped
+    __m512 pha1, pha2; // phasors of 2 registers of 8 elements, complex
+    alignas(64) float bre[16], bim[16]; // bases of a group of 16 blocks
+    // element offsets k in the order unpacklo and unpackhi interleave into
+    // the registers of the first 8 and the next 8 of 16, and the element
+    // offsets of the bases of a group, 16*m for m = 0-7 and 8-15
+    const __m512d k1 = _mm512_setr_pd( 0,  1,  8,  9,  2,  3, 10, 11);
+    const __m512d k2 = _mm512_setr_pd( 4,  5, 12, 13,  6,  7, 14, 15);
+    const __m512d kb1 = _mm512_setr_pd(  0,  16,  32,  48,  64,  80,  96, 112);
+    const __m512d kb2 = _mm512_setr_pd(128, 144, 160, 176, 192, 208, 224, 240);
+    const __m512d dInit = _mm512_set1_pd(phInit);
+    const __m512d dIncr = _mm512_set1_pd(phIncr);
+    __m512d dBase;
+    // the table (sincosCycDbl512 removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDbl512(_mm512_mul_pd(k1, dIncr), _mm512_mul_pd(k2, dIncr),
+        sh, re); // sh = sin, re = cos
+    tab1 = _mm512_unpacklo_ps(re, sh); // [Tr0,Ti0,Tr1,Ti1,...,Tr7,Ti7]
+    tab2 = _mm512_unpackhi_ps(re, sh); // offsets 8-15
+    tsw1 = _mm512_shuffle_ps(tab1, tab1, 0xb1); // [Ti0,Tr0,...,Ti7,Tr7]
+    tsw2 = _mm512_shuffle_ps(tab2, tab2, 0xb1);
+    int i = 0;
+    while(i<len-15) // groups of up to 16 whole blocks of 16 elements
+    {
+      const int g = i; // first element of the group
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 15, each from its own double phase (so no rounding
+      // builds up)
+      dBase = _mm512_set1_pd(static_cast<double>(g));
+      TRIG::sincosCycDbl512(
+          _mm512_fmadd_pd(_mm512_add_pd(kb1, dBase), dIncr, dInit),
+          _mm512_fmadd_pd(_mm512_add_pd(kb2, dBase), dIncr, dInit), sh, re);
+      _mm512_store_ps(bre, re);
+      _mm512_store_ps(bim, sh);
+      const int nb = std::min((len-i)>>4, 16); // whole blocks in the group
+      for(int m=0; m<nb; ++m, i+=16) // process 16 complex elements
+      {
+        br = _mm512_set1_ps(bre[m]);
+        bi = _mm512_set1_ps(bim[m]);
+        // phasors T*B of elements i to i+7 and i+8 to i+15,
+        // [Tr0*Br-Ti0*Bi,Ti0*Br+Tr0*Bi,...]
+        pha1 = _mm512_fmaddsub_ps(tab1, br, _mm512_mul_ps(tsw1, bi));
+        pha2 = _mm512_fmaddsub_ps(tab2, br, _mm512_mul_ps(tsw2, bi));
+        // output the phasors if requested (phOut is the same on every pass,
+        // so the branch predicts well)
+        if(phOut)
+        {
+          _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+          _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha2);
+        }
+        // elements i to i+7, complex multiply as in _tuneKernel
+        ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));  // B
+        sh = _mm512_shuffle_ps(pha1, pha1, 0xb1); // [Ai0,Ar0,...,Ai7,Ar7]
+        im = _mm512_movehdup_ps(ld); // [Bi0,Bi0,Bi1,Bi1,...,Bi7,Bi7]
+        re = _mm512_moveldup_ps(ld); // [Br0,Br0,Br1,Br1,...,Br7,Br7]
+        im = _mm512_mul_ps(sh, im);  // [Ai0*Bi0,Ar0*Bi0,...,Ai7*Bi7,Ar7*Bi7]
+        ld = _mm512_fmaddsub_ps(re, pha1, im); // [Br0*Ar0-Bi0*Ai0,...]
+        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld);
+        // elements i+8 to i+15
+        ld = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+        sh = _mm512_shuffle_ps(pha2, pha2, 0xb1);
+        im = _mm512_movehdup_ps(ld);
+        re = _mm512_moveldup_ps(ld);
+        im = _mm512_mul_ps(sh, im);
+        ld = _mm512_fmaddsub_ps(re, pha2, im);
+        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld);
+      }
+    }
+    // the remaining 1-15 elements: their phasors directly from their
+    // double phases, with masks (2 floats per complex element; a zero
+    // mask reads and writes nothing)
+    if(i<len)
+    {
+      const __mmask16 mk1 = mask16(std::min(len-i, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(len-i-8, 0)<<1);
+      dBase = _mm512_set1_pd(static_cast<double>(i));
+      TRIG::sincosCycDbl512(
+          _mm512_fmadd_pd(_mm512_add_pd(k1, dBase), dIncr, dInit),
+          _mm512_fmadd_pd(_mm512_add_pd(k2, dBase), dIncr, dInit), sh, re);
+      pha1 = _mm512_unpacklo_ps(re, sh);
+      pha2 = _mm512_unpackhi_ps(re, sh);
+      if(phOut)
+      {
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i]), mk1, pha1);
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), mk2,
+            pha2);
+      }
+      ld = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in[i]));
+      sh = _mm512_shuffle_ps(pha1, pha1, 0xb1);
+      im = _mm512_movehdup_ps(ld);
+      re = _mm512_moveldup_ps(ld);
+      im = _mm512_mul_ps(sh, im);
+      ld = _mm512_fmaddsub_ps(re, pha1, im);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk1, ld);
+      ld = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in[i+8]));
+      sh = _mm512_shuffle_ps(pha2, pha2, 0xb1);
+      im = _mm512_movehdup_ps(ld);
+      re = _mm512_moveldup_ps(ld);
+      im = _mm512_mul_ps(sh, im);
+      ld = _mm512_fmaddsub_ps(re, pha2, im);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld);
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    // as in _tuneKernel's AVX2 version, the phasors keep their real (cos)
+    // and imaginary (sin) parts in separate registers and the input is
+    // split the same way, in the lane order 0,1,4,5,2,3,6,7 of the
+    // shuffles
+    __m256 ld1, ld2, re, im, yr, yi, br, bi, c1, s1, c2, s2;
+    __m256 tc1, ts1, tc2, ts2; // offset table, offsets 0-7 and 8-15
+    alignas(32) float bre[8], bim[8]; // bases of a group of 8 blocks
+    // element offsets k of the table in the lane order of the shuffles
+    // (each sincosCycDblAvx2 call takes lanes 0-3 from its first argument
+    // and lanes 4-7 from its second), and the element offsets of the
+    // bases of a group, 16*m for m = 0-3 and 4-7
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d kb1 = _mm256_setr_pd( 0, 16, 32,  48);
+    const __m256d kb2 = _mm256_setr_pd(64, 80, 96, 112);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d dBase, pd, pe;
+    // the table (sincosCycDblAvx2 removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDblAvx2(_mm256_mul_pd(k1, dIncr), _mm256_mul_pd(k2, dIncr),
+        ts1, tc1);
+    TRIG::sincosCycDblAvx2(_mm256_mul_pd(k3, dIncr), _mm256_mul_pd(k4, dIncr),
+        ts2, tc2);
+    int i = 0;
+    while(i<len-15) // groups of up to 8 whole blocks of 16 elements
+    {
+      const int g = i; // first element of the group
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 7, each from its own double phase (so no rounding builds
+      // up)
+      dBase = _mm256_set1_pd(static_cast<double>(g));
+      pd = _mm256_add_pd(kb1, dBase); // element numbers of the bases
+      pe = _mm256_add_pd(kb2, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), bi, br);
+      _mm256_store_ps(bre, br);
+      _mm256_store_ps(bim, bi);
+      const int nb = std::min((len-i)>>4, 8); // whole blocks in the group
+      for(int m=0; m<nb; ++m, i+=16) // process 16 complex elements
+      {
+        br = _mm256_set1_ps(bre[m]);
+        bi = _mm256_set1_ps(bim[m]);
+        // phasors T*B of elements i to i+7 and i+8 to i+15, cos and sin
+        c1 = _mm256_fmsub_ps(tc1, br, _mm256_mul_ps(ts1, bi));
+        s1 = _mm256_fmadd_ps(tc1, bi, _mm256_mul_ps(ts1, br));
+        c2 = _mm256_fmsub_ps(tc2, br, _mm256_mul_ps(ts2, bi));
+        s2 = _mm256_fmadd_ps(tc2, bi, _mm256_mul_ps(ts2, br));
+        // output the phasors if requested, interleaved (phOut is the same
+        // on every pass, so the branch predicts well)
+        if(phOut)
+        {
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]),
+              _mm256_unpacklo_ps(c1, s1));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]),
+              _mm256_unpackhi_ps(c1, s1));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]),
+              _mm256_unpacklo_ps(c2, s2));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]),
+              _mm256_unpackhi_ps(c2, s2));
+        }
+        // elements i to i+7: split the input into real and imaginary parts,
+        // in the lane order of the phasors
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+        re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Br0,Br1,Br4,Br5|Br2,...,Br7]
+        im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Bi0,Bi1,Bi4,Bi5|Bi2,...,Bi7]
+        // yr = Br*Ar-Bi*Ai, yi = Br*Ai+Bi*Ar
+        yr = _mm256_fmsub_ps(re, c1, _mm256_mul_ps(im, s1));
+        yi = _mm256_fmadd_ps(re, s1, _mm256_mul_ps(im, c1));
+        // interleave the real and imaginary parts again: unpacklo gives
+        // elements 0-3 and unpackhi elements 4-7
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+            _mm256_unpacklo_ps(yr, yi));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_unpackhi_ps(yr, yi));
+        // elements i+8 to i+15
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+12]));
+        re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+        im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+        yr = _mm256_fmsub_ps(re, c2, _mm256_mul_ps(im, s2));
+        yi = _mm256_fmadd_ps(re, s2, _mm256_mul_ps(im, c2));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            _mm256_unpacklo_ps(yr, yi));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+            _mm256_unpackhi_ps(yr, yi));
+      }
+    }
+    // the remaining 1-15 elements: their phasors directly from their
+    // double phases, with masks for the 4 registers (2 floats per complex
+    // element; a zero mask reads and writes nothing)
+    if(i<len)
+    {
+      const int n = len-i;
+      const int n1 = std::min(n, 4);                // elements of register 1
+      const int n2 = std::min(std::max(n-4, 0), 4); // register 2
+      const int n3 = std::min(std::max(n-8, 0), 4); // register 3
+      const int n4 = std::max(n-12, 0);             // register 4
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n1<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n2<<1]));
+      const __m256i mk3 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n3<<1]));
+      const __m256i mk4 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n4<<1]));
+      dBase = _mm256_set1_pd(static_cast<double>(i));
+      pd = _mm256_add_pd(k1, dBase); // element numbers
+      pe = _mm256_add_pd(k2, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), s1, c1);
+      pd = _mm256_add_pd(k3, dBase);
+      pe = _mm256_add_pd(k4, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), s2, c2);
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1,
+            _mm256_unpacklo_ps(c1, s1));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2,
+            _mm256_unpackhi_ps(c1, s1));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk3,
+            _mm256_unpacklo_ps(c2, s2));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk4,
+            _mm256_unpackhi_ps(c2, s2));
+      }
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]),
+          mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]),
+          mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_fmsub_ps(re, c1, _mm256_mul_ps(im, s1));
+      yi = _mm256_fmadd_ps(re, s1, _mm256_mul_ps(im, c1));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(yr, yi));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+8]),
+          mk3);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+12]),
+          mk4);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_fmsub_ps(re, c2, _mm256_mul_ps(im, s2));
+      yi = _mm256_fmadd_ps(re, s2, _mm256_mul_ps(im, c2));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk3,
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk4,
+          _mm256_unpackhi_ps(yr, yi));
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    // as in _tuneKernel's AVX2 version, the phasors keep their real (cos)
+    // and imaginary (sin) parts in separate registers and the input is
+    // split the same way, in the lane order 0,1,4,5,2,3,6,7 of the
+    // shuffles
+    __m256 ld1, ld2, re, im, yr, yi, br, bi, c1, s1, c2, s2;
+    __m256 tc1, ts1, tc2, ts2; // offset table, offsets 0-7 and 8-15
+    alignas(32) float bre[8], bim[8]; // bases of a group of 8 blocks
+    // element offsets k of the table in the lane order of the shuffles
+    // (each sincosCycDblAvx call takes lanes 0-3 from its first argument
+    // and lanes 4-7 from its second), and the element offsets of the
+    // bases of a group, 16*m for m = 0-3 and 4-7
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d kb1 = _mm256_setr_pd( 0, 16, 32,  48);
+    const __m256d kb2 = _mm256_setr_pd(64, 80, 96, 112);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d dBase, pd, pe;
+    // the table (sincosCycDblAvx removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDblAvx(_mm256_mul_pd(k1, dIncr), _mm256_mul_pd(k2, dIncr),
+        ts1, tc1);
+    TRIG::sincosCycDblAvx(_mm256_mul_pd(k3, dIncr), _mm256_mul_pd(k4, dIncr),
+        ts2, tc2);
+    int i = 0;
+    while(i<len-15) // groups of up to 8 whole blocks of 16 elements
+    {
+      const int g = i; // first element of the group
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 7, each from its own double phase (so no rounding builds
+      // up)
+      dBase = _mm256_set1_pd(static_cast<double>(g));
+      pd = _mm256_add_pd(kb1, dBase); // element numbers of the bases
+      pe = _mm256_add_pd(kb2, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), bi, br);
+      _mm256_store_ps(bre, br);
+      _mm256_store_ps(bim, bi);
+      const int nb = std::min((len-i)>>4, 8); // whole blocks in the group
+      for(int m=0; m<nb; ++m, i+=16) // process 16 complex elements
+      {
+        br = _mm256_set1_ps(bre[m]);
+        bi = _mm256_set1_ps(bim[m]);
+        // phasors T*B of elements i to i+7 and i+8 to i+15, cos and sin
+        c1 = _mm256_sub_ps(_mm256_mul_ps(tc1, br), _mm256_mul_ps(ts1, bi));
+        s1 = _mm256_add_ps(_mm256_mul_ps(tc1, bi), _mm256_mul_ps(ts1, br));
+        c2 = _mm256_sub_ps(_mm256_mul_ps(tc2, br), _mm256_mul_ps(ts2, bi));
+        s2 = _mm256_add_ps(_mm256_mul_ps(tc2, bi), _mm256_mul_ps(ts2, br));
+        // output the phasors if requested, interleaved (phOut is the same
+        // on every pass, so the branch predicts well)
+        if(phOut)
+        {
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]),
+              _mm256_unpacklo_ps(c1, s1));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]),
+              _mm256_unpackhi_ps(c1, s1));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]),
+              _mm256_unpacklo_ps(c2, s2));
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]),
+              _mm256_unpackhi_ps(c2, s2));
+        }
+        // elements i to i+7: split the input into real and imaginary parts,
+        // in the lane order of the phasors
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+        re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Br0,Br1,Br4,Br5|Br2,...,Br7]
+        im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Bi0,Bi1,Bi4,Bi5|Bi2,...,Bi7]
+        // yr = Br*Ar-Bi*Ai, yi = Br*Ai+Bi*Ar
+        yr = _mm256_sub_ps(_mm256_mul_ps(re, c1), _mm256_mul_ps(im, s1));
+        yi = _mm256_add_ps(_mm256_mul_ps(re, s1), _mm256_mul_ps(im, c1));
+        // interleave the real and imaginary parts again: unpacklo gives
+        // elements 0-3 and unpackhi elements 4-7
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+            _mm256_unpacklo_ps(yr, yi));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_unpackhi_ps(yr, yi));
+        // elements i+8 to i+15
+        ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+        ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+12]));
+        re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+        im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+        yr = _mm256_sub_ps(_mm256_mul_ps(re, c2), _mm256_mul_ps(im, s2));
+        yi = _mm256_add_ps(_mm256_mul_ps(re, s2), _mm256_mul_ps(im, c2));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            _mm256_unpacklo_ps(yr, yi));
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+            _mm256_unpackhi_ps(yr, yi));
+      }
+    }
+    // the remaining 1-15 elements: their phasors directly from their
+    // double phases, with masks for the 4 registers (2 floats per complex
+    // element; a zero mask reads and writes nothing)
+    if(i<len)
+    {
+      const int n = len-i;
+      const int n1 = std::min(n, 4);                // elements of register 1
+      const int n2 = std::min(std::max(n-4, 0), 4); // register 2
+      const int n3 = std::min(std::max(n-8, 0), 4); // register 3
+      const int n4 = std::max(n-12, 0);             // register 4
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n1<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n2<<1]));
+      const __m256i mk3 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n3<<1]));
+      const __m256i mk4 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n4<<1]));
+      dBase = _mm256_set1_pd(static_cast<double>(i));
+      pd = _mm256_add_pd(k1, dBase); // element numbers
+      pe = _mm256_add_pd(k2, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), s1, c1);
+      pd = _mm256_add_pd(k3, dBase);
+      pe = _mm256_add_pd(k4, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), s2, c2);
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1,
+            _mm256_unpacklo_ps(c1, s1));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2,
+            _mm256_unpackhi_ps(c1, s1));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk3,
+            _mm256_unpacklo_ps(c2, s2));
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk4,
+            _mm256_unpackhi_ps(c2, s2));
+      }
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]),
+          mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]),
+          mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_sub_ps(_mm256_mul_ps(re, c1), _mm256_mul_ps(im, s1));
+      yi = _mm256_add_ps(_mm256_mul_ps(re, s1), _mm256_mul_ps(im, c1));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(yr, yi));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+8]),
+          mk3);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+12]),
+          mk4);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88);
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd);
+      yr = _mm256_sub_ps(_mm256_mul_ps(re, c2), _mm256_mul_ps(im, s2));
+      yi = _mm256_add_ps(_mm256_mul_ps(re, s2), _mm256_mul_ps(im, c2));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk3,
+          _mm256_unpacklo_ps(yr, yi));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk4,
+          _mm256_unpackhi_ps(yr, yi));
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    double phAccum;         // double precision phase of element i
+    float reAccum, imAccum; // complex phasor of current phase
+    float reOut, imOut;     // temp variables to avoid overwriting when in==out
+    for(int i=0; i<len; ++i)
+    {
+      // each element's phase is computed from phInit (without the rounding
+      // that adding phIncr each time builds up), whole cycles are removed in
+      // double first, and sincosf gives (sin, cos)
+      phAccum = phInit+i*phIncr;
+      sincosf(static_cast<float>(M_TWO_PI*(phAccum-rint(phAccum))),
+          &imAccum, &reAccum);
+      if(phOut) // output the phasor if requested
+      {
+        phOut[i].real(reAccum);
+        phOut[i].imag(imAccum);
+      }
+      reOut = in[i].real()*reAccum-in[i].imag()*imAccum;
+      imOut = in[i].real()*imAccum+in[i].imag()*reAccum;
+      out[i].real(reOut);
+      out[i].imag(imOut);
+    }
+    phAccum = phInit+len*phIncr;
+    return phAccum-trunc(phAccum);
+  }
+
+  // NCO tune of real data via direct sin/cos computation, phase in cycles,
+  // outputs complex phasor if phOut is not null.  The SIMD versions use the
+  // base phasors and offset table of the complex versions
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of 16 outputs
+    // only overwrites the inputs of later blocks, or its own after it has
+    // read them.  The blocks and groups are counted from element 0, and
+    // the last, partial, block comes first
+    __m512 ld, sh, re, br, bi;
+    __m512 tab1, tab2, tsw1, tsw2; // offset table, and with re/im swapped
+    __m512 pha1, pha2; // phasors of 2 registers of 8 elements, complex
+    alignas(64) float bre[16], bim[16]; // bases of a group of 16 blocks
+    // indexes that duplicate each of the first 8 and of the last 8 of 16 real
+    // inputs, [x0,x0,x1,x1,...,x7,x7] and [x8,x8,x9,x9,...,x15,x15]
+    const __m512i dlo = _mm512_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
+        6, 6, 7, 7);
+    const __m512i dhi = _mm512_setr_epi32(8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13, 14, 14, 15, 15);
+    // element offsets k in the order unpacklo and unpackhi interleave into
+    // the registers of the first 8 and the next 8 of 16, and the element
+    // offsets of the bases of a group, 16*m for m = 0-7 and 8-15
+    const __m512d k1 = _mm512_setr_pd( 0,  1,  8,  9,  2,  3, 10, 11);
+    const __m512d k2 = _mm512_setr_pd( 4,  5, 12, 13,  6,  7, 14, 15);
+    const __m512d kb1 = _mm512_setr_pd(  0,  16,  32,  48,  64,  80,  96, 112);
+    const __m512d kb2 = _mm512_setr_pd(128, 144, 160, 176, 192, 208, 224, 240);
+    const __m512d dInit = _mm512_set1_pd(phInit);
+    const __m512d dIncr = _mm512_set1_pd(phIncr);
+    __m512d dBase;
+    // the table (sincosCycDbl512 removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDbl512(_mm512_mul_pd(k1, dIncr), _mm512_mul_pd(k2, dIncr),
+        sh, re); // sh = sin, re = cos
+    tab1 = _mm512_unpacklo_ps(re, sh); // [Tr0,Ti0,Tr1,Ti1,...,Tr7,Ti7]
+    tab2 = _mm512_unpackhi_ps(re, sh); // offsets 8-15
+    tsw1 = _mm512_shuffle_ps(tab1, tab1, 0xb1); // [Ti0,Tr0,...,Ti7,Tr7]
+    tsw2 = _mm512_shuffle_ps(tab2, tab2, 0xb1);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements: its phasors directly from their
+    // double phases, with masks (the input mask selects the elements it
+    // has, the output masks twice as many floats; a zero mask reads and
+    // writes nothing)
+    if(i<len)
+    {
+      const int n = len-i;
+      const __mmask16 mk1 = mask16(std::min(n, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(n-8, 0)<<1);
+      dBase = _mm512_set1_pd(static_cast<double>(i));
+      TRIG::sincosCycDbl512(
+          _mm512_fmadd_pd(_mm512_add_pd(k1, dBase), dIncr, dInit),
+          _mm512_fmadd_pd(_mm512_add_pd(k2, dBase), dIncr, dInit), sh, re);
+      pha1 = _mm512_unpacklo_ps(re, sh);
+      pha2 = _mm512_unpackhi_ps(re, sh);
+      if(phOut)
+      {
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i]), mk1, pha1);
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), mk2,
+            pha2);
+      }
+      // note we duplicate each real input, so it multiplies the interleaved
+      // real and imaginary parts of the phasor
+      ld = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2,
+          _mm512_mul_ps(_mm512_permutexvar_ps(dhi, ld), pha2));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm512_mul_ps(_mm512_permutexvar_ps(dlo, ld), pha1));
+    }
+    while(i>0) // groups of up to 16 whole blocks, from the last to the first
+    {
+      const int g = (i-1)&~255; // first element of the group of block i-16
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 15, each from its own double phase (so no rounding
+      // builds up)
+      dBase = _mm512_set1_pd(static_cast<double>(g));
+      TRIG::sincosCycDbl512(
+          _mm512_fmadd_pd(_mm512_add_pd(kb1, dBase), dIncr, dInit),
+          _mm512_fmadd_pd(_mm512_add_pd(kb2, dBase), dIncr, dInit), sh, re);
+      _mm512_store_ps(bre, re);
+      _mm512_store_ps(bim, sh);
+      for(int m=((i-g)>>4)-1; m>=0; --m) // process 16 real elements
+      {
+        i -= 16; // block m of the group
+        br = _mm512_set1_ps(bre[m]);
+        bi = _mm512_set1_ps(bim[m]);
+        // phasors T*B of elements i to i+7 and i+8 to i+15,
+        // [Tr0*Br-Ti0*Bi,Ti0*Br+Tr0*Bi,...]
+        pha1 = _mm512_fmaddsub_ps(tab1, br, _mm512_mul_ps(tsw1, bi));
+        pha2 = _mm512_fmaddsub_ps(tab2, br, _mm512_mul_ps(tsw2, bi));
+        // output the phasors if requested (phOut is the same on every pass,
+        // so the branch predicts well)
+        if(phOut)
+        {
+          _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+          _mm512_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha2);
+        }
+        ld = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            _mm512_mul_ps(_mm512_permutexvar_ps(dhi, ld), pha2));
+        _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+            _mm512_mul_ps(_mm512_permutexvar_ps(dlo, ld), pha1));
+      }
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    // from the end of the buffer to the start as in the AVX-512 version,
+    // and in each block the register of its last 4 elements first (in
+    // place, a register of outputs only overwrites inputs that have been
+    // read)
+    __m256 sh, re, br, bi;
+    __m128 x;
+    __m256 tab1, tab2, tab3, tab4; // offset table, offsets 0-3 ... 12-15
+    __m256 tsw1, tsw2, tsw3, tsw4; // the same with re/im swapped
+    __m256 pha1, pha2, pha3, pha4; // phasors of 4 registers of 4 elements
+    alignas(32) float bre[8], bim[8]; // bases of a group of 8 blocks
+    // index that duplicates each of 4 real inputs held in both halves of a
+    // register, [x0,x0,x1,x1|x2,x2,x3,x3]
+    const __m256i dup = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
+    // element offsets k in the order unpacklo and unpackhi interleave into
+    // the registers of the first 4 and the next 4 of 8, and the element
+    // offsets of the bases of a group, 16*m for m = 0-3 and 4-7
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d kb1 = _mm256_setr_pd( 0, 16, 32,  48);
+    const __m256d kb2 = _mm256_setr_pd(64, 80, 96, 112);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d dBase, pd, pe;
+    // the table (sincosCycDblAvx2 removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDblAvx2(_mm256_mul_pd(k1, dIncr), _mm256_mul_pd(k2, dIncr),
+        sh, re); // sh = sin, re = cos
+    tab1 = _mm256_unpacklo_ps(re, sh); // [Tr0,Ti0,...,Tr3,Ti3]
+    tab2 = _mm256_unpackhi_ps(re, sh); // offsets 4-7
+    TRIG::sincosCycDblAvx2(_mm256_mul_pd(k3, dIncr), _mm256_mul_pd(k4, dIncr),
+        sh, re);
+    tab3 = _mm256_unpacklo_ps(re, sh); // offsets 8-11
+    tab4 = _mm256_unpackhi_ps(re, sh); // offsets 12-15
+    tsw1 = _mm256_shuffle_ps(tab1, tab1, 0xb1); // [Ti0,Tr0,...,Ti3,Tr3]
+    tsw2 = _mm256_shuffle_ps(tab2, tab2, 0xb1);
+    tsw3 = _mm256_shuffle_ps(tab3, tab3, 0xb1);
+    tsw4 = _mm256_shuffle_ps(tab4, tab4, 0xb1);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements: its phasors directly from their
+    // double phases, with masks (the input masks select the elements
+    // each register has, the output masks twice as many floats; a zero
+    // mask reads and writes nothing)
+    if(i<len)
+    {
+      const int n = len-i;
+      const int n1 = std::min(n, 4);                // elements of register 1
+      const int n2 = std::min(std::max(n-4, 0), 4); // register 2
+      const int n3 = std::min(std::max(n-8, 0), 4); // register 3
+      const int n4 = std::max(n-12, 0);             // register 4
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n1<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n2<<1]));
+      const __m256i mk3 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n3<<1]));
+      const __m256i mk4 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n4<<1]));
+      dBase = _mm256_set1_pd(static_cast<double>(i));
+      pd = _mm256_add_pd(k1, dBase); // element numbers
+      pe = _mm256_add_pd(k2, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), sh, re);
+      pha1 = _mm256_unpacklo_ps(re, sh);
+      pha2 = _mm256_unpackhi_ps(re, sh);
+      pd = _mm256_add_pd(k3, dBase);
+      pe = _mm256_add_pd(k4, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), sh, re);
+      pha3 = _mm256_unpacklo_ps(re, sh);
+      pha4 = _mm256_unpackhi_ps(re, sh);
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1, pha1);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2, pha2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk3, pha3);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk4, pha4);
+      }
+      // elements i+12 to i+15
+      x = _mm_maskload_ps(&in[i+12], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n4])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk4,
+          _mm256_mul_ps(re, pha4));
+      // elements i+8 to i+11
+      x = _mm_maskload_ps(&in[i+8], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n3])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk3,
+          _mm256_mul_ps(re, pha3));
+      // elements i+4 to i+7
+      x = _mm_maskload_ps(&in[i+4], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n2])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_mul_ps(re, pha2));
+      // elements i to i+3
+      x = _mm_maskload_ps(&in[i], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n1])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_mul_ps(re, pha1));
+    }
+    while(i>0) // groups of up to 8 whole blocks, from the last to the first
+    {
+      const int g = (i-1)&~127; // first element of the group of block i-16
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 7, each from its own double phase (so no rounding builds
+      // up)
+      dBase = _mm256_set1_pd(static_cast<double>(g));
+      pd = _mm256_add_pd(kb1, dBase); // element numbers of the bases
+      pe = _mm256_add_pd(kb2, dBase);
+      TRIG::sincosCycDblAvx2(_mm256_fmadd_pd(pd, dIncr, dInit),
+          _mm256_fmadd_pd(pe, dIncr, dInit), bi, br);
+      _mm256_store_ps(bre, br);
+      _mm256_store_ps(bim, bi);
+      for(int m=((i-g)>>4)-1; m>=0; --m) // process 16 real elements
+      {
+        i -= 16; // block m of the group
+        br = _mm256_set1_ps(bre[m]);
+        bi = _mm256_set1_ps(bim[m]);
+        // phasors T*B, [Tr0*Br-Ti0*Bi,Ti0*Br+Tr0*Bi,...]
+        pha1 = _mm256_fmaddsub_ps(tab1, br, _mm256_mul_ps(tsw1, bi));
+        pha2 = _mm256_fmaddsub_ps(tab2, br, _mm256_mul_ps(tsw2, bi));
+        pha3 = _mm256_fmaddsub_ps(tab3, br, _mm256_mul_ps(tsw3, bi));
+        pha4 = _mm256_fmaddsub_ps(tab4, br, _mm256_mul_ps(tsw4, bi));
+        // output the phasors if requested (phOut is the same on every pass,
+        // so the branch predicts well)
+        if(phOut)
+        {
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]), pha2);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha3);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]), pha4);
+        }
+        // elements i+12 to i+15 (broadcast_ps loads the 4 inputs into both
+        // halves of the register)
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+12])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+            _mm256_mul_ps(re, pha4));
+        // elements i+8 to i+11
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+8])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            _mm256_mul_ps(re, pha3));
+        // elements i+4 to i+7
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+4])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_mul_ps(re, pha2));
+        // elements i to i+3
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+            _mm256_mul_ps(re, pha1));
+      }
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    // from the end of the buffer to the start as in the AVX-512 version,
+    // and in each block the register of its last 4 elements first (in
+    // place, a register of outputs only overwrites inputs that have been
+    // read)
+    __m256 sh, re, br, bi;
+    __m128 x;
+    __m256 tab1, tab2, tab3, tab4; // offset table, offsets 0-3 ... 12-15
+    __m256 tsw1, tsw2, tsw3, tsw4; // the same with re/im swapped
+    __m256 pha1, pha2, pha3, pha4; // phasors of 4 registers of 4 elements
+    alignas(32) float bre[8], bim[8]; // bases of a group of 8 blocks
+    // index that duplicates each of 4 real inputs held in both halves of a
+    // register, [x0,x0,x1,x1|x2,x2,x3,x3]
+    const __m256i dup = _mm256_setr_epi32(0, 0, 1, 1, 2, 2, 3, 3);
+    // element offsets k in the order unpacklo and unpackhi interleave into
+    // the registers of the first 4 and the next 4 of 8, and the element
+    // offsets of the bases of a group, 16*m for m = 0-3 and 4-7
+    const __m256d k1 = _mm256_setr_pd( 0,  1,  4,  5);
+    const __m256d k2 = _mm256_setr_pd( 2,  3,  6,  7);
+    const __m256d k3 = _mm256_setr_pd( 8,  9, 12, 13);
+    const __m256d k4 = _mm256_setr_pd(10, 11, 14, 15);
+    const __m256d kb1 = _mm256_setr_pd( 0, 16, 32,  48);
+    const __m256d kb2 = _mm256_setr_pd(64, 80, 96, 112);
+    const __m256d dInit = _mm256_set1_pd(phInit);
+    const __m256d dIncr = _mm256_set1_pd(phIncr);
+    __m256d dBase, pd, pe;
+    // the table (sincosCycDblAvx removes the nearest quarter cycle in
+    // double)
+    TRIG::sincosCycDblAvx(_mm256_mul_pd(k1, dIncr), _mm256_mul_pd(k2, dIncr),
+        sh, re); // sh = sin, re = cos
+    tab1 = _mm256_unpacklo_ps(re, sh); // [Tr0,Ti0,...,Tr3,Ti3]
+    tab2 = _mm256_unpackhi_ps(re, sh); // offsets 4-7
+    TRIG::sincosCycDblAvx(_mm256_mul_pd(k3, dIncr), _mm256_mul_pd(k4, dIncr),
+        sh, re);
+    tab3 = _mm256_unpacklo_ps(re, sh); // offsets 8-11
+    tab4 = _mm256_unpackhi_ps(re, sh); // offsets 12-15
+    tsw1 = _mm256_shuffle_ps(tab1, tab1, 0xb1); // [Ti0,Tr0,...,Ti3,Tr3]
+    tsw2 = _mm256_shuffle_ps(tab2, tab2, 0xb1);
+    tsw3 = _mm256_shuffle_ps(tab3, tab3, 0xb1);
+    tsw4 = _mm256_shuffle_ps(tab4, tab4, 0xb1);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements: its phasors directly from their
+    // double phases, with masks (the input masks select the elements
+    // each register has, the output masks twice as many floats; a zero
+    // mask reads and writes nothing)
+    if(i<len)
+    {
+      const int n = len-i;
+      const int n1 = std::min(n, 4);                // elements of register 1
+      const int n2 = std::min(std::max(n-4, 0), 4); // register 2
+      const int n3 = std::min(std::max(n-8, 0), 4); // register 3
+      const int n4 = std::max(n-12, 0);             // register 4
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n1<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n2<<1]));
+      const __m256i mk3 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n3<<1]));
+      const __m256i mk4 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n4<<1]));
+      dBase = _mm256_set1_pd(static_cast<double>(i));
+      pd = _mm256_add_pd(k1, dBase); // element numbers
+      pe = _mm256_add_pd(k2, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), sh, re);
+      pha1 = _mm256_unpacklo_ps(re, sh);
+      pha2 = _mm256_unpackhi_ps(re, sh);
+      pd = _mm256_add_pd(k3, dBase);
+      pe = _mm256_add_pd(k4, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), sh, re);
+      pha3 = _mm256_unpacklo_ps(re, sh);
+      pha4 = _mm256_unpackhi_ps(re, sh);
+      if(phOut)
+      {
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i]), mk1, pha1);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+4]), mk2, pha2);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+8]), mk3, pha3);
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&phOut[i+12]), mk4, pha4);
+      }
+      // elements i+12 to i+15
+      x = _mm_maskload_ps(&in[i+12], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n4])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+12]), mk4,
+          _mm256_mul_ps(re, pha4));
+      // elements i+8 to i+11
+      x = _mm_maskload_ps(&in[i+8], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n3])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+8]), mk3,
+          _mm256_mul_ps(re, pha3));
+      // elements i+4 to i+7
+      x = _mm_maskload_ps(&in[i+4], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n2])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_mul_ps(re, pha2));
+      // elements i to i+3
+      x = _mm_maskload_ps(&in[i], _mm_load_si128(
+          reinterpret_cast<__m128i const *>(masks[n1])));
+      re = _mm256_permutevar_ps(_mm256_insertf128_ps(_mm256_castps128_ps256(x),
+          x, 1), dup);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_mul_ps(re, pha1));
+    }
+    while(i>0) // groups of up to 8 whole blocks, from the last to the first
+    {
+      const int g = (i-1)&~127; // first element of the group of block i-16
+      // the bases of the group's blocks, e^(j*2*pi*(phInit + (g+16*m)*phIncr))
+      // for m = 0 to 7, each from its own double phase (so no rounding builds
+      // up)
+      dBase = _mm256_set1_pd(static_cast<double>(g));
+      pd = _mm256_add_pd(kb1, dBase); // element numbers of the bases
+      pe = _mm256_add_pd(kb2, dBase);
+      TRIG::sincosCycDblAvx(_mm256_add_pd(_mm256_mul_pd(pd, dIncr), dInit),
+          _mm256_add_pd(_mm256_mul_pd(pe, dIncr), dInit), bi, br);
+      _mm256_store_ps(bre, br);
+      _mm256_store_ps(bim, bi);
+      for(int m=((i-g)>>4)-1; m>=0; --m) // process 16 real elements
+      {
+        i -= 16; // block m of the group
+        br = _mm256_set1_ps(bre[m]);
+        bi = _mm256_set1_ps(bim[m]);
+        // phasors T*B, [Tr0*Br-Ti0*Bi,Ti0*Br+Tr0*Bi,...]
+        pha1 = _mm256_addsub_ps(_mm256_mul_ps(tab1, br),
+            _mm256_mul_ps(tsw1, bi));
+        pha2 = _mm256_addsub_ps(_mm256_mul_ps(tab2, br),
+            _mm256_mul_ps(tsw2, bi));
+        pha3 = _mm256_addsub_ps(_mm256_mul_ps(tab3, br),
+            _mm256_mul_ps(tsw3, bi));
+        pha4 = _mm256_addsub_ps(_mm256_mul_ps(tab4, br),
+            _mm256_mul_ps(tsw4, bi));
+        // output the phasors if requested (phOut is the same on every pass,
+        // so the branch predicts well)
+        if(phOut)
+        {
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i]), pha1);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+4]), pha2);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+8]), pha3);
+          _mm256_storeu_ps(reinterpret_cast<float *>(&phOut[i+12]), pha4);
+        }
+        // elements i+12 to i+15 (broadcast_ps loads the 4 inputs into both
+        // halves of the register)
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+12])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+12]),
+            _mm256_mul_ps(re, pha4));
+        // elements i+8 to i+11
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+8])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            _mm256_mul_ps(re, pha3));
+        // elements i+4 to i+7
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i+4])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_mul_ps(re, pha2));
+        // elements i to i+3
+        re = _mm256_permutevar_ps(_mm256_broadcast_ps(
+            reinterpret_cast<__m128 const *>(&in[i])), dup);
+        _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+            _mm256_mul_ps(re, pha1));
+      }
+    }
+    const double retVal = phInit+len*phIncr;
+    return retVal-trunc(retVal);
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out,
+      complex<float> * const phOut)
+  {
+    if(len<=0) return phInit; // no elements: the phase is unchanged
+    double phAccum;         // double precision phase of element i
+    float reAccum, imAccum; // complex phasor of current phase
+    float reOut, imOut;     // temp variables to avoid overwriting when in==out
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      // each element's phase is computed from phInit (the loop runs
+      // backwards), whole cycles are removed in double first, and sincosf
+      // gives (sin, cos)
+      phAccum = phInit+i*phIncr;
+      sincosf(static_cast<float>(M_TWO_PI*(phAccum-rint(phAccum))),
+          &imAccum, &reAccum);
+      if(phOut) // output the phasor if requested
+      {
+        phOut[i].real(reAccum);
+        phOut[i].imag(imAccum);
+      }
+      reOut = in[i]*reAccum;
+      imOut = in[i]*imAccum;
+      out[i].real(reOut);
+      out[i].imag(imOut);
+    }
+    phAccum = phInit+len*phIncr;
+    return phAccum-trunc(phAccum);
+  }
+
+  // NCO tune of complex data via direct sin/cos computation, phase in cycles,
+  // no phasor output (defined after all the versions of the phOut overload,
+  // which it calls with phOut = nullptr)
+  inline double tunesp(complex<float> const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    return tunesp(in, len, phInit, phIncr, out, nullptr);
+  }
+
+  // NCO tune of real data via direct sin/cos computation, phase in cycles,
+  // no phasor output (defined after all the versions of the phOut overload,
+  // which it calls with phOut = nullptr)
+  inline double tunesp(float const * const in, const int len,
+      const double phInit, const double phIncr, complex<float> * const out)
+  {
+    return tunesp(in, len, phInit, phIncr, out, nullptr);
+  }
 
 } // namespace EVM
 #endif // EFFICIENT_VECTOR_MATH_H

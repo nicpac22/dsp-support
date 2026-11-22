@@ -28,6 +28,8 @@
 //  the target attribute of the instruction set it is written for, so it can
 //  only be called from a function with the same (or a larger) target:
 //    sincosCyc  sine and cosine of 2*pi*ph, phase in cycles
+//    sincosCycDbl  the same for phases given as doubles (two registers),
+//               reduced in double first (for the tune kernels)
 //    sincosRad  sine and cosine of x, x in radians
 //    atan2Cyc   atan2(y, x) in cycles
 //    atan2Rad   atan2(y, x) in radians
@@ -119,6 +121,22 @@ namespace TRIG
         _mm512_mask_blend_ps(odd, c, s)), fc));
   }
 
+  // sin(2*pi*t) and cos(2*pi*t) for |t| <= 1/8
+  TA5 inline void sincosCycPoly512(const __m512 t, __m512 &s, __m512 &c)
+  {
+    const __m512 z = _mm512_mul_ps(t, t);
+    s = _mm512_fmadd_ps(z, _mm512_set1_ps(-75.4456558f),
+        _mm512_set1_ps(81.5937653f));
+    s = _mm512_fmadd_ps(z, s, _mm512_set1_ps(-41.341671f));
+    s = _mm512_fmadd_ps(z, s, _mm512_set1_ps(6.28318548f));
+    s = _mm512_mul_ps(t, s);                         // sin(2*pi*t)
+    c = _mm512_fmadd_ps(z, _mm512_set1_ps(59.3497009f),
+        _mm512_set1_ps(-85.4471436f));
+    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(64.9393616f));
+    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(-19.7392082f));
+    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(1.0f)); // cos(2*pi*t)
+  }
+
   TA5 inline void sincosCyc512(const __m512 ph, __m512 &sn, __m512 &cs)
   {
     // q4 = ph rounded to the nearest quarter cycle (roundscale keeping 2
@@ -126,22 +144,43 @@ namespace TRIG
     // so the reduction adds no error however large ph is
     const __m512 q4 = _mm512_roundscale_ps(ph, (2<<4) |
         _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-    const __m512 t = _mm512_sub_ps(ph, q4);
-    const __m512 z = _mm512_mul_ps(t, t);
-    __m512 s = _mm512_fmadd_ps(z, _mm512_set1_ps(-75.4456558f),
-        _mm512_set1_ps(81.5937653f));
-    s = _mm512_fmadd_ps(z, s, _mm512_set1_ps(-41.341671f));
-    s = _mm512_fmadd_ps(z, s, _mm512_set1_ps(6.28318548f));
-    s = _mm512_mul_ps(t, s);                         // sin(2*pi*t)
-    __m512 c = _mm512_fmadd_ps(z, _mm512_set1_ps(59.3497009f),
-        _mm512_set1_ps(-85.4471436f));
-    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(64.9393616f));
-    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(-19.7392082f));
-    c = _mm512_fmadd_ps(z, c, _mm512_set1_ps(1.0f)); // cos(2*pi*t)
+    __m512 s, c;
+    sincosCycPoly512(_mm512_sub_ps(ph, q4), s, c);
     // quadrant from 4*q4 (for |ph| >= 2^29 the conversion overflows to
     // 0x80000000, quadrant 0, which is right for a whole number of cycles)
     quadrant512(_mm512_cvtps_epi32(_mm512_mul_ps(q4, _mm512_set1_ps(4.0f))),
         s, c, sn, cs);
+  }
+
+  // sincosCyc of 16 phases given as doubles, lanes 0-7 from lo and 8-15 from
+  // hi.  The nearest quarter cycle is removed in double, so the float
+  // argument of the polynomials keeps the accuracy of the double phase (for
+  // |ph| < 2^49): y = 4*ph + 1.5*2^52 rounds 4*ph to an integer q held in the
+  // low bits of y (the quadrant), q/4 = y/4 - 1.5*2^50 exactly, and
+  // t = ph - q/4 is exact (|t| <= 1/8)
+  TA5 inline void sincosCycDbl512(const __m512d lo, const __m512d hi,
+      __m512 &sn, __m512 &cs)
+  {
+    const __m512d four = _mm512_set1_pd(4.0);
+    const __m512d quarter = _mm512_set1_pd(0.25);
+    const __m512d magic = _mm512_set1_pd(6755399441055744.0);  // 1.5*2^52
+    const __m512d magic4 = _mm512_set1_pd(1688849860263936.0); // 1.5*2^50
+    const __m512d ylo = _mm512_fmadd_pd(lo, four, magic);
+    const __m512d yhi = _mm512_fmadd_pd(hi, four, magic);
+    const __m256 tlo = _mm512_cvtpd_ps(_mm512_sub_pd(lo,
+        _mm512_fmsub_pd(ylo, quarter, magic4)));
+    const __m256 thi = _mm512_cvtpd_ps(_mm512_sub_pd(hi,
+        _mm512_fmsub_pd(yhi, quarter, magic4)));
+    const __m512 t = _mm512_castpd_ps(_mm512_insertf64x4(
+        _mm512_castpd256_pd512(_mm256_castps_pd(tlo)), _mm256_castps_pd(thi),
+        1));
+    // the low 32 bits of each y, in the same lane order as t
+    const __m512i q = _mm512_permutex2var_epi32(_mm512_castpd_si512(ylo),
+        _mm512_setr_epi32(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26,
+        28, 30), _mm512_castpd_si512(yhi));
+    __m512 s, c;
+    sincosCycPoly512(t, s, c);
+    quadrant512(q, s, c, sn, cs);
   }
 
   TA5 inline void sincosRad512(const __m512 x, __m512 &sn, __m512 &cs)
@@ -262,6 +301,22 @@ namespace TRIG
     cs = _mm256_xor_ps(sel256(odd, c, s), fc);
   }
 
+  // sin(2*pi*t) and cos(2*pi*t) for |t| <= 1/8
+  TA2 inline void sincosCycPolyAvx2(const __m256 t, __m256 &s, __m256 &c)
+  {
+    const __m256 z = _mm256_mul_ps(t, t);
+    s = _mm256_fmadd_ps(z, _mm256_set1_ps(-75.4456558f),
+        _mm256_set1_ps(81.5937653f));
+    s = _mm256_fmadd_ps(z, s, _mm256_set1_ps(-41.341671f));
+    s = _mm256_fmadd_ps(z, s, _mm256_set1_ps(6.28318548f));
+    s = _mm256_mul_ps(t, s);
+    c = _mm256_fmadd_ps(z, _mm256_set1_ps(59.3497009f),
+        _mm256_set1_ps(-85.4471436f));
+    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(64.9393616f));
+    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(-19.7392082f));
+    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(1.0f));
+  }
+
   TA2 inline void sincosCycAvx2(const __m256 ph, __m256 &sn, __m256 &cs)
   {
     // q = nearest quarter cycle, ph - q/4 is exact (|t| <= 1/8), so the
@@ -270,19 +325,35 @@ namespace TRIG
     // avoid that, but costs 13-20%)
     const __m256 q = _mm256_round_ps(_mm256_mul_ps(ph, _mm256_set1_ps(4.0f)),
         _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-    const __m256 t = _mm256_fnmadd_ps(q, _mm256_set1_ps(0.25f), ph);
-    const __m256 z = _mm256_mul_ps(t, t);
-    __m256 s = _mm256_fmadd_ps(z, _mm256_set1_ps(-75.4456558f),
-        _mm256_set1_ps(81.5937653f));
-    s = _mm256_fmadd_ps(z, s, _mm256_set1_ps(-41.341671f));
-    s = _mm256_fmadd_ps(z, s, _mm256_set1_ps(6.28318548f));
-    s = _mm256_mul_ps(t, s);
-    __m256 c = _mm256_fmadd_ps(z, _mm256_set1_ps(59.3497009f),
-        _mm256_set1_ps(-85.4471436f));
-    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(64.9393616f));
-    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(-19.7392082f));
-    c = _mm256_fmadd_ps(z, c, _mm256_set1_ps(1.0f));
+    __m256 s, c;
+    sincosCycPolyAvx2(_mm256_fnmadd_ps(q, _mm256_set1_ps(0.25f), ph), s, c);
     quadrantAvx2(_mm256_cvtps_epi32(q), s, c, sn, cs);
+  }
+
+  // sincosCyc of 8 phases given as doubles, lanes 0-3 from lo and 4-7 from
+  // hi, reduced in double as in sincosCycDbl512
+  TA2 inline void sincosCycDblAvx2(const __m256d lo, const __m256d hi,
+      __m256 &sn, __m256 &cs)
+  {
+    const __m256d four = _mm256_set1_pd(4.0);
+    const __m256d quarter = _mm256_set1_pd(0.25);
+    const __m256d magic = _mm256_set1_pd(6755399441055744.0);  // 1.5*2^52
+    const __m256d magic4 = _mm256_set1_pd(1688849860263936.0); // 1.5*2^50
+    const __m256d ylo = _mm256_fmadd_pd(lo, four, magic);
+    const __m256d yhi = _mm256_fmadd_pd(hi, four, magic);
+    const __m128 tlo = _mm256_cvtpd_ps(_mm256_sub_pd(lo,
+        _mm256_fmsub_pd(ylo, quarter, magic4)));
+    const __m128 thi = _mm256_cvtpd_ps(_mm256_sub_pd(hi,
+        _mm256_fmsub_pd(yhi, quarter, magic4)));
+    const __m256 t = _mm256_insertf128_ps(_mm256_castps128_ps256(tlo), thi, 1);
+    // the low 32 bits of each y: shuffle_ps gives the lanes in the order
+    // 0,1,4,5,2,3,6,7, which permute4x64 puts back in t's order
+    const __m256i q = _mm256_permute4x64_epi64(_mm256_castps_si256(
+        _mm256_shuffle_ps(_mm256_castpd_ps(ylo), _mm256_castpd_ps(yhi),
+        0x88)), 0xd8);
+    __m256 s, c;
+    sincosCycPolyAvx2(t, s, c);
+    quadrantAvx2(q, s, c, sn, cs);
   }
 
   TA2 inline void sincosRadAvx2(const __m256 x, __m256 &sn, __m256 &cs)
@@ -394,23 +465,53 @@ namespace TRIG
     cs = _mm256_xor_ps(_mm256_xor_ps(c, d), fc);
   }
 
+  // sin(2*pi*t) and cos(2*pi*t) for |t| <= 1/8
+  TA1 inline void sincosCycPolyAvx(const __m256 t, __m256 &s, __m256 &c)
+  {
+    const __m256 z = _mm256_mul_ps(t, t);
+    s = _mm256_add_ps(_mm256_mul_ps(z, _mm256_set1_ps(-75.4456558f)),
+        _mm256_set1_ps(81.5937653f));
+    s = _mm256_add_ps(_mm256_mul_ps(z, s), _mm256_set1_ps(-41.341671f));
+    s = _mm256_add_ps(_mm256_mul_ps(z, s), _mm256_set1_ps(6.28318548f));
+    s = _mm256_mul_ps(t, s);
+    c = _mm256_add_ps(_mm256_mul_ps(z, _mm256_set1_ps(59.3497009f)),
+        _mm256_set1_ps(-85.4471436f));
+    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(64.9393616f));
+    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(-19.7392082f));
+    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(1.0f));
+  }
+
   TA1 inline void sincosCycAvx(const __m256 ph, __m256 &sn, __m256 &cs)
   {
     // as in the AVX2 version (q*0.25 is exact, so is ph - q/4)
     const __m256 q = _mm256_round_ps(_mm256_mul_ps(ph, _mm256_set1_ps(4.0f)),
         _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-    const __m256 t = _mm256_sub_ps(ph, _mm256_mul_ps(q, _mm256_set1_ps(0.25f)));
-    const __m256 z = _mm256_mul_ps(t, t);
-    __m256 s = _mm256_add_ps(_mm256_mul_ps(z, _mm256_set1_ps(-75.4456558f)),
-        _mm256_set1_ps(81.5937653f));
-    s = _mm256_add_ps(_mm256_mul_ps(z, s), _mm256_set1_ps(-41.341671f));
-    s = _mm256_add_ps(_mm256_mul_ps(z, s), _mm256_set1_ps(6.28318548f));
-    s = _mm256_mul_ps(t, s);
-    __m256 c = _mm256_add_ps(_mm256_mul_ps(z, _mm256_set1_ps(59.3497009f)),
-        _mm256_set1_ps(-85.4471436f));
-    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(64.9393616f));
-    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(-19.7392082f));
-    c = _mm256_add_ps(_mm256_mul_ps(z, c), _mm256_set1_ps(1.0f));
+    __m256 s, c;
+    sincosCycPolyAvx(_mm256_sub_ps(ph, _mm256_mul_ps(q,
+        _mm256_set1_ps(0.25f))), s, c);
+    quadrantAvx(q, s, c, sn, cs);
+  }
+
+  // sincosCyc of 8 phases given as doubles, lanes 0-3 from lo and 4-7 from
+  // hi, reduced in double: f = ph - round(ph) and t = f - q/4 with
+  // q = round(4*f) are exact, and q (-2 to 2) converts to float exactly
+  TA1 inline void sincosCycDblAvx(const __m256d lo, const __m256d hi,
+      __m256 &sn, __m256 &cs)
+  {
+    const int rnd = _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC;
+    const __m256d four = _mm256_set1_pd(4.0);
+    const __m256d quarter = _mm256_set1_pd(0.25);
+    const __m256d flo = _mm256_sub_pd(lo, _mm256_round_pd(lo, rnd));
+    const __m256d fhi = _mm256_sub_pd(hi, _mm256_round_pd(hi, rnd));
+    const __m256d qlo = _mm256_round_pd(_mm256_mul_pd(flo, four), rnd);
+    const __m256d qhi = _mm256_round_pd(_mm256_mul_pd(fhi, four), rnd);
+    const __m256 t = _mm256_insertf128_ps(_mm256_castps128_ps256(
+        _mm256_cvtpd_ps(_mm256_sub_pd(flo, _mm256_mul_pd(qlo, quarter)))),
+        _mm256_cvtpd_ps(_mm256_sub_pd(fhi, _mm256_mul_pd(qhi, quarter))), 1);
+    const __m256 q = _mm256_insertf128_ps(_mm256_castps128_ps256(
+        _mm256_cvtpd_ps(qlo)), _mm256_cvtpd_ps(qhi), 1);
+    __m256 s, c;
+    sincosCycPolyAvx(t, s, c);
     quadrantAvx(q, s, c, sn, cs);
   }
 
