@@ -1960,22 +1960,73 @@ namespace EVM
   //=========================//
   // Compute the natural exponent of each element of an input buffer, e^(in[i]),
   // output may be the same as input
+  //    in = input buffer to compute natural exponent of
+  //    len = number of samples to process
+  //    out = natural exponent of input (e^(in[i]))
   inline void exp(float const * const in, const int len, float * const out);
   
   // Compute the natural logarithm of each element of an input buffer,
   // log(in[i]), output may be the same as input
+  //    in = input buffer to compute natural logarithm of
+  //    len = number of samples to process
+  //    out = natural logarithm of input (log(in[i]))
   inline void log(float const * const in, const int len, float * const out);
 
   //===============================//
   // Trigonometric/Transcendentals //
   //===============================//
-//    cxexp = compute a complex exponential of an input buffer (e^(j*in[i]))
-//    cxexpsi = same as cxexp with a scale factor applied to input and optional
-//        constant added to input (e^(j*(K*in[i]+C)))
-//    cxexpso = same as cxexp with a scale factor applied to the output and
-//        optional constant added to the input (K*e^(j*(in[i]+C)))
-//    cxexpss = same as cxexp with scale factors applied to both input and
-//        output and optional constant added to input (Ko*e^(j*(Ki*in[i]+C)))
+  // Compute the complex exponential of a real-valued input buffer
+  // (e^(j*in[i])), output buffer may be the same as input
+  //    in = input buffer to compute complex exponential of
+  //    len = number of samples to process
+  //    out = complex exponential of input (e^(j*in[i]))
+  inline void cxexp(float const * const in, const int len,
+      complex<float> * const out);
+  
+  // Compute the complex exponential of a real-valued input buffer with
+  // the input multiplied by a constant scale factor and with an optional
+  // constant (eps) added to the scaled input, i.e. e^(j*(scale*in[i]+eps)),
+  // output buffer may be the same as input
+  //    in = input buffer to compute complex exponential of
+  //    len = number of samples to process
+  //    scale = scale factor to multiply input by
+  //    out = complex exponential of scaled input
+  //    eps = constant to add to scaled input
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out);
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps);
+
+  // Compute the complex exponential of a real-valued input buffer with
+  // the output multiplied by a constant scale factor and with an optional
+  // constant (eps) added to the input, i.e. scale*e^(j*(in[i]+eps)), output
+  // buffer may be the same as input
+  //    in = input buffer to compute complex exponential of
+  //    len = number of samples to process
+  //    scale = scale factor to multiply output by
+  //    out = scaled complex exponential of input
+  //    eps = constant to add to input
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out);
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps);
+  
+  // Compute the complex exponential of a real-valued input buffer with
+  // both the input and output multiplied by constant scale factors and with an
+  // optional constant (eps) added to the scaled input, i.e.
+  // outscale*e^(j*(inscale*in[i]+eps)), output buffer may be the same as input
+  //    in = input buffer to compute complex exponential of
+  //    len = number of samples to process
+  //    inscale = scale factor to multiply input by
+  //    outscale = scale factor to multiply output by
+  //    out = complex exponential of input, both input and output scaled
+  //    eps = constant to add to scaled input
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out);
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out,
+      const float eps);
+
 //    fmmod = FM modulate a buffer of real-valued input data
 //    fmmods = FM modulate a buffer of real-valued input data with a scale
 //        factor applied to the output
@@ -29401,6 +29452,999 @@ namespace EVM
     return;
   }
 
+  //===============================//
+  // Trigonometric/Transcendentals //
+  //===============================//
+  // complex exponential of input e^(j*in)
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void cxexp(float const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them.  The blocks are counted from element 0, so the last, partial,
+    // block comes first
+    __m512 ph, sn, cs;
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      ph = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void cxexp(float const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version; SVML's AVX2 sincos is about 2.4x faster
+    // than its AVX one (see polToCartRad).  The input is permuted to
+    // [x0,x1,x4,x5|x2,x3,x6,x7], so that unpacklo and unpackhi interleave
+    // the cosines and sines into elements 0-3 and 4-7
+    __m256 ph, sn, cs;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void cxexp(float const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves (AVX has no permute across the
+    // halves for the input)
+    __m256 ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void cxexp(float const * const in, const int len,
+      complex<float> * const out)
+  {
+    float re, im;
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      sincosf(in[i], &im, &re);
+      out[i].real(re);
+      out[i].imag(im);
+    }
+    return;
+  }
+  
+  // complex exponential of scaled input e^(j*(scale*in+eps))
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them.  The blocks are counted from element 0, so the last, partial,
+    // block comes first
+    __m512 ph, sn, cs;
+    const __m512 si = _mm512_set1_ps(scale); // input scale
+    const __m512 ep = _mm512_set1_ps(eps);
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      ph = _mm512_fmadd_ps(si, ph, ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      ph = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+      ph = _mm512_fmadd_ps(si, ph, ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version; SVML's AVX2 sincos is about 2.4x faster
+    // than its AVX one (see polToCartRad).  The input is permuted to
+    // [x0,x1,x4,x5|x2,x3,x6,x7], so that unpacklo and unpackhi interleave
+    // the cosines and sines into elements 0-3 and 4-7
+    __m256 ph, sn, cs;
+    const __m256 si = _mm256_set1_ps(scale); // input scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_fmadd_ps(si, ph, ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_fmadd_ps(si, ph, ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves (AVX has no permute across the
+    // halves for the input)
+    __m256 ph, sn, cs, lo, hi;
+    const __m256 si = _mm256_set1_ps(scale); // input scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // scale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    float re, im;
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      sincosf(scale*in[i]+eps, &im, &re);
+      out[i].real(re);
+      out[i].imag(im);
+    }
+    return;
+  }
+  inline void cxexpsi(float const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    // the eps version with eps = -0, which leaves every phase as it is
+    // (adding +0 would turn a phase of -0 into +0, and with it the sign of
+    // the zero imaginary part)
+    cxexpsi(in, len, scale, out, -0.0f);
+    return;
+  }
+  
+  // scaled complex exponential of input scale*e^(j*(in+eps))
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them.  The blocks are counted from element 0, so the last, partial,
+    // block comes first
+    __m512 ph, sn, cs;
+    const __m512 so = _mm512_set1_ps(scale); // output scale
+    const __m512 ep = _mm512_set1_ps(eps);
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      ph = _mm512_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      ph = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+      ph = _mm512_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version; SVML's AVX2 sincos is about 2.4x faster
+    // than its AVX one (see polToCartRad).  The input is permuted to
+    // [x0,x1,x4,x5|x2,x3,x6,x7], so that unpacklo and unpackhi interleave
+    // the cosines and sines into elements 0-3 and 4-7
+    __m256 ph, sn, cs;
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves (AVX has no permute across the
+    // halves for the input)
+    __m256 ph, sn, cs, lo, hi;
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_add_ps(ph, ep); // x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out, const float eps)
+  {
+    float re, im;
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      sincosf(in[i]+eps, &im, &re);
+      out[i].real(scale*re);
+      out[i].imag(scale*im);
+    }
+    return;
+  }
+  // the same without eps
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them.  The blocks are counted from element 0, so the last, partial,
+    // block comes first
+    __m512 ph, sn, cs;
+    const __m512 so = _mm512_set1_ps(scale); // output scale
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      ph = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version; SVML's AVX2 sincos is about 2.4x faster
+    // than its AVX one (see polToCartRad).  The input is permuted to
+    // [x0,x1,x4,x5|x2,x3,x6,x7], so that unpacklo and unpackhi interleave
+    // the cosines and sines into elements 0-3 and 4-7
+    __m256 ph, sn, cs;
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves (AVX has no permute across the
+    // halves for the input)
+    __m256 ph, sn, cs, lo, hi;
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void cxexpso(float const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    float re, im;
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      sincosf(in[i], &im, &re);
+      out[i].real(scale*re);
+      out[i].imag(scale*im);
+    }
+    return;
+  }
+  
+  // scaled complex exponential of scaled input
+  // outscale*e^(j*(inscale*in+eps))
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffer to the start, in case in and out share a buffer (the real
+    // input in the front of the complex output): a block of outputs only
+    // overwrites the inputs of later blocks, or its own after it has read
+    // them.  The blocks are counted from element 0, so the last, partial,
+    // block comes first
+    __m512 ph, sn, cs;
+    const __m512 si = _mm512_set1_ps(inscale); // input scale
+    const __m512 so = _mm512_set1_ps(outscale); // output scale
+    const __m512 ep = _mm512_set1_ps(eps);
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      ph = _mm512_fmadd_ps(si, ph, ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      ph = _mm512_loadu_ps(&in[i]); // [x0,...,x15]
+      ph = _mm512_fmadd_ps(si, ph, ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version; SVML's AVX2 sincos is about 2.4x faster
+    // than its AVX one (see polToCartRad).  The input is permuted to
+    // [x0,x1,x4,x5|x2,x3,x6,x7], so that unpacklo and unpackhi interleave
+    // the cosines and sines into elements 0-3 and 4-7
+    __m256 ph, sn, cs;
+    const __m256 si = _mm256_set1_ps(inscale); // input scale
+    const __m256 so = _mm256_set1_ps(outscale); // output scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_fmadd_ps(si, ph, ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(ph),
+          0xd8));
+      ph = _mm256_fmadd_ps(si, ph, ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_unpackhi_ps(cs, sn));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_unpacklo_ps(cs, sn));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out,
+      const float eps)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves (AVX has no permute across the
+    // halves for the input)
+    __m256 ph, sn, cs, lo, hi;
+    const __m256 si = _mm256_set1_ps(inscale); // input scale
+    const __m256 so = _mm256_set1_ps(outscale); // output scale
+    const __m256 ep = _mm256_set1_ps(eps);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      ph = _mm256_loadu_ps(&in[i]);
+      ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // inscale*x+eps
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out,
+      const float eps)
+  {
+    float re, im;
+    for(int i=len-1; i>=0; --i) // iterate backwards in case in == out
+    {
+      sincosf(inscale*in[i]+eps, &im, &re);
+      out[i].real(outscale*re);
+      out[i].imag(outscale*im);
+    }
+    return;
+  }
+  inline void cxexpss(float const * const in, const int len,
+      const float inscale, const float outscale, complex<float> * const out)
+  {
+    // the eps version with eps = -0, which leaves every phase as it is
+    // (adding +0 would turn a phase of -0 into +0, and with it the sign of
+    // the zero imaginary part)
+    cxexpss(in, len, inscale, outscale, out, -0.0f);
+    return;
+  }
+  
   //======================================//
   // Specialized Functions Implementation //
   //======================================//
