@@ -30411,7 +30411,7 @@ namespace EVM
   {
     if(len<=0) return phstart; // no elements: the phase is unchanged
     // Loop runs backwards to avoid overwriting input data before it's used
-    // input and output buffers are the same.  The blocks are counted from
+    // if input and output buffers are the same.  The blocks are counted from
     // element 0, so the last, partial, block comes first.  Each phase,
     // phscale*in[i] + phstart + i*phincr in cycles, is computed in double
     // precision, using lo for elements 0-7 of the block and hi for 8-15.
@@ -30420,7 +30420,7 @@ namespace EVM
     // phscale*in[i] + i*phincr stays below 2^49 cycles (the AVX and
     // default versions remove whole cycles from each phase, so they are
     // exact at any phase; this is not done for AVX512 or AVX2 as it decreases
-    // performance by blocking ports
+    // performance by blocking ports)
     const double p0 = phstart-rint(phstart); // phstart less whole cycles
     __m512d lo, hi, base;
     __m512 x, sn, cs;
@@ -30653,7 +30653,7 @@ namespace EVM
   {
     if(len<=0) return phstart; // no elements: the phase is unchanged
     // Loop runs backwards to avoid overwriting input data before it's used
-    // input and output buffers are the same.  The blocks are counted from
+    // if input and output buffers are the same.  The blocks are counted from
     // element 0, so the last, partial, block comes first.  Each phase,
     // phscale*in[i] + phstart + i*phincr in cycles, is computed in double
     // precision, using lo for elements 0-7 of the block and hi for 8-15.
@@ -30662,7 +30662,7 @@ namespace EVM
     // phscale*in[i] + i*phincr stays below 2^49 cycles (the AVX and
     // default versions remove whole cycles from each phase, so they are
     // exact at any phase; this is not done for AVX512 or AVX2 as it decreases
-    // performance by blocking ports
+    // performance by blocking ports)
     const double p0 = phstart-rint(phstart); // phstart less whole cycles
     __m512d lo, hi, base;
     __m512 x, sn, cs;
@@ -31113,7 +31113,7 @@ namespace EVM
     __m256 ld1, ld2, re, im;
     const __m256 zero = _mm256_setzero_ps();
     // note: the same as the AVX version except for evm_trig.h's AVX2
-    // atan2 (with FMA), which is about 10% faster
+    // atan2, which is faster due to FMA
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles, unpacklo and unpackhi then
@@ -31440,7 +31440,7 @@ namespace EVM
     const __m256 zero = _mm256_setzero_ps();
     const __m256 sc = _mm256_set1_ps(scale);
     // note: the same as the AVX version except for evm_trig.h's AVX2
-    // atan2 (with FMA), which is about 10% faster
+    // atan2, which is faster due to FMA
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles, unpacklo and unpackhi then
