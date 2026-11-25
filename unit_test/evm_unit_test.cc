@@ -1857,6 +1857,662 @@ static void checkExpLogSpecial(const char* name, const bool isLog,
 }
 
 //==============================================================================
+// NCO tuning (tune, tunecx, tunesp)
+//
+//   runEvm(in, len, phInit, phIncr, out, phOut)  calls the function under test
+//       (the overloads without phOut ignore it) and returns its result
+//
+// in is gAc or gAf, and element k must come out as
+// in[k]*e^(j*scale*(phInit + k*phIncr)), scale = 1 for radians and 2*pi for
+// cycles, within TOL_TRIG + m*drift of |in[k]|: tune and tunecx advance their
+// phasor with complex multiplies, so their error may ramp up along the buffer
+// (drift), m elements from where it starts: element 0 for complex input, the
+// last element for real input, which runs from the end to the start.
+// tunesp's error may not ramp up (drift = 0).  With ph, phOut[k] must be the
+// phasor within the same bound.  Each pair of phases runs every length with
+// separate buffers and in place: the complex input under the output, or the
+// real input in the front of the (wider) complex output buffer, which the
+// real versions handle by running from the end to the start.  Nothing may be
+// written past out[len-1] or phOut[len-1] (len <= 0 writes nothing), and the
+// result must be the phase for the next call, phInit + len*phIncr with whole
+// cycles removed (fmod(., 2*pi) for tune), or phInit itself for len <= 0.
+// A NaN or infinite phInit must give NaN in every element and phasor, and so
+// must a NaN or infinite phIncr, except in element 0 with k0Finite (the
+// complex tune and tunecx, whose first phasor comes from phInit alone).
+//==============================================================================
+template<class TI, class FEVM>
+static void checkTune(const char* name, const bool cyc, const bool ph,
+                      const bool k0Finite, const double drift,
+                      const std::vector<double>& phases, FEVM runEvm)
+{
+  ++gTests;
+  const double scale = cyc ? 2.0*M_PI : 1.0;
+  const TI* src;
+  if constexpr (std::is_same<TI, float>::value) src = gAf.data();
+  else src = gAc.data();
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  double worst = 0.0;  // worst error as a fraction of its bound
+  std::vector<complex<float> > out(MAXLEN + GUARD), pho(MAXLEN + GUARD);
+  const float* of = reinterpret_cast<const float*>(out.data());
+  const float* pf = reinterpret_cast<const float*>(pho.data());
+  auto report = [&](const int len, const int k, const char* what,
+                    const cdbl got, const cdbl want, const char* mode)
+  {
+    ++nbad;
+    if(nshown >= MAX_REPORT) return;
+    ++nshown;
+    printf("      len=%-5d element %-5d %s evm=%s want=%s%s\n", len, k, what,
+           format(got, true).c_str(), format(want, true).c_str(), mode);
+  };
+  for(size_t pi=0; pi+1<phases.size(); pi+=2)
+  {
+    const double p0 = phases[pi], dp = phases[pi+1];
+    for(int mode=0; mode<2; ++mode)
+    for(size_t li=0; li<gLengths.size(); ++li)
+    {
+      const int len = gLengths[li];
+      const int valid = (len > 0) ? len : 0;
+      const char* mname = mode ? " [in place]" : "";
+      for(int k=0; k<MAXLEN+GUARD; ++k)
+        out[k] = pho[k] = sentinel<complex<float> >();
+      double ret;
+      if(mode == 0) ret = runEvm(src, len, p0, dp, out.data(), pho.data());
+      else
+      {
+        // the input in the front of the output buffer
+        std::memcpy(out.data(), src, valid*sizeof(TI));
+        ret = runEvm(reinterpret_cast<const TI*>(out.data()), len, p0, dp,
+                     out.data(), pho.data());
+      }
+      for(int k=0; k<valid; ++k)
+      {
+        const cdbl w = std::polar(1.0, scale*(p0 + k*dp));
+        const cdbl x = toCdbl(src[k]);
+        const int m = std::is_same<TI, float>::value ? len-1-k : k;
+        const double bound = TOL_TRIG + m*drift;
+        const double e = std::abs(toCdbl(out[k]) - x*w)/std::max(std::abs(x),
+            static_cast<double>(std::numeric_limits<float>::min()));
+        ++compared;
+        if(e <= bound) worst = std::max(worst, e/bound);
+        else report(len, k, isSentinel(out[k]) ? "NOT WRITTEN" : "",
+                    toCdbl(out[k]), x*w, mname);
+        if(!ph) continue;
+        const double ep = std::abs(toCdbl(pho[k]) - w);
+        if(ep <= bound) worst = std::max(worst, ep/bound);
+        else report(len, k, "phasor", toCdbl(pho[k]), w, mname);
+      }
+      for(int k=2*valid; k<2*(MAXLEN+GUARD); ++k)
+      {
+        if(!isSentinel(of[k]))
+          report(len, k/2, "WROTE PAST END", toCdbl(out[k/2]), cdbl(), mname);
+        if(ph && !isSentinel(pf[k]))
+          report(len, k/2, "phasor WROTE PAST END", toCdbl(pho[k/2]), cdbl(),
+                 mname);
+      }
+      if(len <= 0)
+      {
+        if(!(ret == p0))
+          report(len, 0, "phase changed", cdbl(ret), cdbl(p0), mname);
+      }
+      else
+      {
+        double want = p0 + len*dp;
+        want = cyc ? want - std::trunc(want) : std::fmod(want, 2.0*M_PI);
+        if(!(std::fabs(ret - want) <= 1.0e-9))
+          report(len, len, "next phase", cdbl(ret), cdbl(want), mname);
+      }
+    }
+    // NaN and infinite phases
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double bad[4][2] = {{nan, dp}, {HUGE_VAL, dp}, {p0, nan},
+                              {p0, -HUGE_VAL}};
+    for(int b=0; b<4; ++b)
+    for(int len=1; len<=40; ++len)
+    {
+      for(int k=0; k<MAXLEN+GUARD; ++k)
+        out[k] = pho[k] = sentinel<complex<float> >();
+      runEvm(src, len, bad[b][0], bad[b][1], out.data(), pho.data());
+      for(int k=0; k<len; ++k)
+      {
+        ++compared;
+        if(k == 0 && k0Finite && b >= 2)
+        {
+          const cdbl w = std::polar(1.0, scale*p0);
+          const double e = std::abs(toCdbl(out[0]) - toCdbl(src[0])*w)/
+              std::max(std::abs(toCdbl(src[0])), 1.0e-30);
+          if(!(e <= TOL_TRIG))
+            report(len, 0, "phIncr NaN/INF", toCdbl(out[0]),
+                   toCdbl(src[0])*w, "");
+          continue;
+        }
+        if(!bitsNan(out[k].real()) || !bitsNan(out[k].imag()))
+          report(len, k, b < 2 ? "phInit NaN/INF" : "phIncr NaN/INF",
+                 toCdbl(out[k]), cdbl(nan, nan), "");
+        if(ph && (!bitsNan(pho[k].real()) || !bitsNan(pho[k].imag())))
+          report(len, k, b < 2 ? "phasor, phInit NaN/INF" :
+                 "phasor, phIncr NaN/INF", toCdbl(pho[k]), cdbl(nan, nan), "");
+      }
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, worst %.2f of bound", name,
+         pass ? "PASS" : "FAIL", compared, worst);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// Complex exponentials (cxexp, cxexpsi, cxexpso, cxexpss)
+//
+//   runEvm(in, len, out)  calls the function under test
+//
+// Element k must come out as os*e^(j*(is*in[k] + eps)) for the function's
+// input scale is, output scale os and eps.  The phase is computed in float,
+// so its rounding (about 2^-24 of |is*in[k]| for the product and of the
+// phase for the sum, or once for an FMA) is part of the bound, which is
+// TOL_TRIG plus that, of |os|.  Every length runs with separate buffers and
+// in place (the real input in the front of the wider complex output buffer,
+// which the functions handle by running from the end to the start), and
+// nothing may be written past out[len-1] (len <= 0 writes nothing).
+//
+// The special values (zeros of both signs, +-1, infinities, NaN, denormals,
+// large values, in every lane at lengths 1 to 40, out of place and in place)
+// expect the phase in float, ph = is*in[k] + eps.  An infinite or NaN ph
+// must give NaN in both parts, and ph = +-0 exactly (os, os*(+-0)) with the
+// sign of the zero; the overloads without eps pass eps = -0, which keeps the
+// sign of a zero phase.  evm_trig.h's sincosRad gives sin(-0) = +0 (keeping
+// the sign would cost it 2.5-8%), so on the SIMD paths without SVML the zero
+// may have either sign.  The huge values only go through the functions
+// whose phase is exact (no scale, or eps = -0), since a rounding of the
+// phase of 1 ulp at 1e30 changes the result completely.
+//==============================================================================
+template<class FEVM>
+static void checkCxexp(const char* name, const std::vector<float>& src,
+                       const double is, const double os, const float eps,
+                       const bool huge, FEVM runEvm)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  double worst = 0.0;
+  const int n0 = static_cast<int>(src.size());
+  std::vector<complex<float> > out(n0 + GUARD);
+#if defined(EVM_SVML)
+  const bool anyZeroSign = false;
+#else
+  const std::string lvl = EVM::getOptLevel();
+  const bool anyZeroSign = (lvl == "AVX512" || lvl == "AVX2" || lvl == "AVX");
+#endif
+  const float* of = reinterpret_cast<const float*>(out.data());
+  const float* cur = src.data(); // the input of the current run
+  auto report = [&](const int len, const int k, const char* what,
+                    const cdbl got, const cdbl want, const char* mode)
+  {
+    ++nbad;
+    if(nshown >= MAX_REPORT) return;
+    ++nshown;
+    printf("      len=%-5d element %-5d %s in=%.9g evm=%s want=%s%s\n", len, k,
+           what, k < len ? cur[k] : 0.0f, format(got, true).c_str(),
+           format(want, true).c_str(), mode);
+  };
+  auto run = [&](const float* in, const int len, const int mode,
+                 std::vector<complex<float> >& o)
+  {
+    for(size_t k=0; k<o.size(); ++k) o[k] = sentinel<complex<float> >();
+    const int valid = (len > 0) ? len : 0;
+    if(mode == 0) runEvm(in, len, o.data());
+    else
+    {
+      std::memcpy(o.data(), in, valid*sizeof(float));
+      runEvm(reinterpret_cast<const float*>(o.data()), len, o.data());
+    }
+  };
+  // ordinary values, every length
+  for(int mode=0; mode<2; ++mode)
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len = std::min(gLengths[li], n0);
+    const int valid = (len > 0) ? len : 0;
+    const char* mname = mode ? " [in place]" : "";
+    run(src.data(), len, mode, out);
+    for(int k=0; k<valid; ++k)
+    {
+      const double x = src[k], p = is*x + eps;
+      const double bound = TOL_TRIG + (std::fabs(is*x) + std::fabs(p))*
+          std::ldexp(1.0, -24);
+      const cdbl w = os*std::polar(1.0, p);
+      const double e = std::abs(toCdbl(out[k]) - w)/std::fabs(os);
+      ++compared;
+      if(e <= bound) worst = std::max(worst, e/bound);
+      else report(len, k, isSentinel(out[k]) ? "NOT WRITTEN" : "",
+                  toCdbl(out[k]), w, mname);
+    }
+    for(int k=2*valid; k<2*(n0+GUARD); ++k)
+      if(!isSentinel(of[k]))
+        report(len, k/2, "WROTE PAST END", toCdbl(out[k/2]), cdbl(), mname);
+  }
+  // special values
+  {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    std::vector<float> sp = {0.0f, -0.0f, 1.0f, -1.0f, 0.5f, inf, -inf, nan,
+                             1.0e-40f, -1.0e-40f, 1.0e-30f};
+    if(huge)
+      for(float v : {3.4e38f, -3.4e38f, 1.0e30f, -1.0e7f, 65537.0f})
+        sp.push_back(v);
+    const int nsp = static_cast<int>(sp.size());
+    std::vector<complex<float> > o(64 + GUARD);
+    for(int mode=0; mode<2; ++mode)
+    for(int len=1; len<=40; ++len)
+    for(int start=0; start<nsp; ++start)
+    {
+      std::vector<float> in(len);
+      for(int k=0; k<len; ++k) in[k] = sp[(start + k) % nsp];
+      const char* mname = mode ? " [in place]" : "";
+      cur = in.data();
+      run(in.data(), len, mode, o);
+      for(int k=0; k<len; ++k)
+      {
+        const float x = in[k];
+        // the float phase.  Zero signs are worked out on the bits (bitsNeg),
+        // since icpx's fast fp-model folds x + 0 to x and drops the sign of
+        // zero constants here: the sum of two zeros is -0 only if both are -0
+        const float px = static_cast<float>(is*x);
+        const float pf = px + eps;
+        const bool pzero = bitsZero(px) && bitsZero(eps);
+        const bool pneg = bitsNeg(px) && bitsNeg(eps);
+        const cdbl got = toCdbl(o[k]);
+        ++compared;
+        if(!std::isfinite(pf))
+        {
+          if(!bitsNan(o[k].real()) || !bitsNan(o[k].imag()))
+            report(len, k, "NaN/INF phase", got, cdbl(nan, nan), mname);
+          continue;
+        }
+        if(pzero)
+        {
+          // exactly (os, os*(+-0)): the zero's sign is the phase's, flipped
+          // for a negative os
+          const bool wneg = pneg != (os < 0);
+          if(!(o[k].real() == static_cast<float>(os) && bitsZero(o[k].imag()) &&
+               (bitsNeg(o[k].imag()) == wneg || anyZeroSign)))
+            report(len, k, "zero phase", got, cdbl(os, wneg ? -0.0 : 0.0),
+                   mname);
+          continue;
+        }
+        const double p = static_cast<double>(pf);
+        const double bound = TOL_TRIG + (std::fabs(is*x) + std::fabs(p))*
+            std::ldexp(1.0, -24);
+        const cdbl w = os*std::polar(1.0, p);
+        const double e = std::abs(got - w)/std::fabs(os);
+        if(!(e <= bound + std::numeric_limits<float>::min()))
+          report(len, k, "special value", got, w, mname);
+      }
+      for(int k=2*len; k<2*(64+GUARD); ++k)
+        if(!isSentinel(reinterpret_cast<const float*>(o.data())[k]))
+          report(len, k/2, "WROTE PAST END", toCdbl(o[k/2]), cdbl(), mname);
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, worst %.2f of bound", name,
+         pass ? "PASS" : "FAIL", compared, worst);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// Special values for the arctangents (atan2, atan2s, multcatan2, multcatan2s)
+//
+//   runEvm(in1, in2, len, out)  calls the function under test (atan2 and
+//                               atan2s ignore in2); TO is float for a real
+//                               output and complex<float> for a complex one
+//
+// atan2 and atan2s run on every combination of a real and an imaginary part
+// from zeros of both signs, +-1, infinities, NaN, denormals, the largest
+// floats and 0.5.  multcatan2 and multcatan2s run on every pair of inputs
+// whose parts are zeros of both signs, +-1, 0.5, -3, infinities and NaN:
+// their products are exact, and finite ones neither overflow nor underflow,
+// so the double reference sees the same product as the kernels.  The list
+// runs from each of 17 starts to its end, so every value goes through every
+// lane and the last register has every length, out of place and in place
+// (on in1, and for multcatan2 on in2).  An angle of NaN must give NaN and a
+// zero angle a zero of the same sign (times the scale's), checked on the
+// bits since icpx's fast math may drop NaN checks; otherwise the error must
+// be within TOL_TRIG of the angle, plus FLT_MIN since a denormal angle may
+// be flushed to zero (under DAZ the double references see denormal inputs
+// as zero too, as the kernels do).  A complex output's imaginary part must
+// be +0.  With zeroAngle (multcatan2 and multcatan2s with the flag set), a
+// product whose parts are both zero must give +0 instead.  Nothing may be
+// written past out[len-1], and a real output on top of a complex input must
+// leave the rest of the input as it was.
+//==============================================================================
+static bool dblNan(const double v)
+{
+  uint64_t b;
+  std::memcpy(&b, &v, sizeof(b));
+  return (b & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
+}
+
+template<class TO, class FEVM>
+static void checkAtan2Special(const char* name, const bool two,
+                              const double scale, const bool zeroAngle,
+                              FEVM runEvm)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  const bool cplx = IsComplex<TO>::value;
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::vector<float> sp = two ?
+      std::vector<float>{0.0f, -0.0f, 1.0f, -1.0f, 0.5f, -3.0f, inf, -inf,
+                         nan} :
+      std::vector<float>{0.0f, -0.0f, 1.0f, -1.0f, inf, -inf, nan, 1.0e-40f,
+                         -1.0e-40f, 3.4e38f, -3.4e38f, 0.5f};
+  std::vector<complex<float> > vals, a1, a2;
+  for(float re : sp)
+    for(float im : sp) vals.push_back(complex<float>(re, im));
+  for(const complex<float> x : vals)
+  {
+    if(!two) { a1.push_back(x); a2.push_back(x); continue; }
+    for(const complex<float> y : vals) { a1.push_back(x); a2.push_back(y); }
+  }
+  const int n = static_cast<int>(a1.size());
+  const int nf = 2*(n + GUARD); // floats in each buffer
+  // the angle in double, times the scale
+  auto want = [&](const complex<float> x, const complex<float> y)
+  {
+    double re = x.real(), im = x.imag();
+    if(two)
+    {
+      const double xr = x.real(), xi = x.imag();
+      const double yr = y.real(), yi = y.imag();
+      re = xr*yr + xi*yi;
+      im = xi*yr - xr*yi;
+    }
+    return std::atan2(im, re)*scale;
+  };
+  // a zero product, which gives +0 with zeroAngle
+  auto zeroProd = [&](const complex<float> x, const complex<float> y)
+  {
+    const double xr = x.real(), xi = x.imag();
+    const double yr = y.real(), yi = y.imag();
+    return xr*yr + xi*yi == 0.0 && xi*yr - xr*yi == 0.0;
+  };
+  std::vector<complex<float> > b1(n + GUARD), b2(n + GUARD), ob(n + GUARD);
+  std::vector<complex<float> > orig(n + GUARD);
+  for(int mode=0; mode<(two ? 3 : 2); ++mode)
+  for(int s=0; s<=16; ++s)
+  {
+    const int len = n - s;
+    const char* mname = (mode == 0) ? "" : (mode == 1) ? " [in place on in1]"
+                                                       : " [in place on in2]";
+    for(int k=0; k<n+GUARD; ++k)
+    {
+      b1[k] = (k < len) ? a1[s+k] : sentinel<complex<float> >();
+      b2[k] = (k < len) ? a2[s+k] : sentinel<complex<float> >();
+      ob[k] = sentinel<complex<float> >();
+    }
+    std::vector<complex<float> >& res = (mode == 0) ? ob : (mode == 1) ? b1
+                                                                       : b2;
+    orig = res;
+    runEvm(b1.data(), b2.data(), len, reinterpret_cast<TO*>(res.data()));
+    const float* rf = reinterpret_cast<const float*>(res.data());
+    const float* of = reinterpret_cast<const float*>(orig.data());
+    for(int k=0; k<len; ++k)
+    {
+      const double w = want(a1[s+k], a2[s+k]);
+      const float g = cplx ? rf[2*k] : rf[k];
+      bool ok;
+      ++compared;
+      if(zeroAngle && zeroProd(a1[s+k], a2[s+k])) ok = floatBits(g) == 0;
+      else if(dblNan(w)) ok = bitsNan(g);
+      else if(w == 0.0)
+        ok = bitsZero(g) && (bitsNeg(g) == std::signbit(w));
+      else ok = !bitsNan(g) && std::fabs(g - w) <= TOL_TRIG*std::fabs(w) +
+                std::numeric_limits<float>::min();
+      if(cplx && floatBits(rf[2*k+1]) != 0) ok = false;
+      if(ok) continue;
+      ++nbad;
+      if(nshown >= MAX_REPORT) continue;
+      ++nshown;
+      printf("      len=%-5d element %-5d in1=(%g,%g)", len, k,
+             a1[s+k].real(), a1[s+k].imag());
+      if(two) printf(" in2=(%g,%g)", a2[s+k].real(), a2[s+k].imag());
+      if(cplx) printf(" evm=(%.9g,%.9g)", rf[2*k], rf[2*k+1]);
+      else     printf(" evm=%.9g", g);
+      printf(" want=%.9g%s\n", w, mname);
+    }
+    // past the results: the rest of a complex input under a real output,
+    // otherwise the sentinel
+    for(int k=(cplx ? 2*len : len); k<nf; ++k)
+    {
+      const bool kept = (mode > 0 && !cplx && k < 2*len) ?
+          std::memcmp(&rf[k], &of[k], sizeof(float)) == 0 :
+          floatBits(rf[k]) == SENTINEL_BITS;
+      if(kept) continue;
+      ++nbad;
+      if(nshown >= MAX_REPORT) continue;
+      ++nshown;
+      printf("      len=%-5d float %-5d WROTE PAST END evm=%.9g%s\n", len, k,
+             rf[k], mname);
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, NaN/zeros exact", name,
+         pass ? "PASS" : "FAIL", compared);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// FM modulation (fmmod, and fmmods with an output scale)
+//
+//   runEvm(in, len, phscale, phstart, phincr, out)  calls the function under
+//                                                   test (with the output
+//                                                   scale of the run) and
+//                                                   returns its result
+//
+// Element k must come out as scale*e^(j*2*pi*ph) with the phase in cycles
+// ph = phscale*in[k] + phstart + k*phincr, computed in double with whole
+// cycles removed before the float sin/cos (from phstart first), so a large
+// phstart or k*phincr costs no accuracy.  The error must be within TOL_TRIG
+// of |scale|.  The return value must be the phase of element len, phstart +
+// len*phincr, with whole cycles removed (|r| < 1, within 1e-9 modulo whole
+// cycles), and exactly phstart for len <= 0.  Every length runs out of place
+// and in place (the real input in the front of the wider complex output,
+// which the functions handle by running from the end to the start), and
+// nothing may be written past out[len-1].
+//
+// The special values (zeros of both signs, quarter and half cycles, +-1,
+// infinities, NaN, denormals and large values up to FLT_MAX, in every lane
+// at lengths 1 to 40, out of place and in place) run with phscale = 1 and
+// phstart = phincr = 0, so the phase is the input itself: an infinite or NaN
+// one must give NaN in both parts.  A phstart past 2^49 cycles with
+// fractional bits (2^50 + 0.25 and others) must come out right too: the
+// AVX-512/AVX2 reduction is exact below 2^49 cycles, and whole cycles are
+// removed from phstart first.  phscale*in[k] past 2^49 cycles is not tested,
+// since there only the AVX and default versions are exact.  An infinite or
+// NaN phstart or phincr must give NaN everywhere and as the return value.
+//==============================================================================
+template<class FEVM>
+static void checkFmmod(const char* name, const std::vector<float>& src,
+                       const double phscale, const double phstart,
+                       const double phincr, const double scale, FEVM runEvm)
+{
+  ++gTests;
+  long compared = 0;
+  int  nbad = 0, nshown = 0;
+  double worst = 0.0;
+  const int n0 = static_cast<int>(src.size());
+  std::vector<complex<float> > out(n0 + GUARD);
+  const float* cur = src.data(); // the input of the current run
+  int curLen = 0;
+  auto report = [&](const int len, const int k, const char* what,
+                    const cdbl got, const cdbl want, const char* mode)
+  {
+    ++nbad;
+    if(nshown >= MAX_REPORT) return;
+    ++nshown;
+    printf("      len=%-5d element %-5d %s in=%.9g evm=%s want=%s%s\n", len, k,
+           what, (k >= 0 && k < curLen) ? cur[k] : 0.0f,
+           format(got, true).c_str(), format(want, true).c_str(), mode);
+  };
+  auto run = [&](const float* in, const int len, const int mode,
+                 std::vector<complex<float> >& o, const double ps,
+                 const double p0, const double p1)
+  {
+    for(size_t k=0; k<o.size(); ++k) o[k] = sentinel<complex<float> >();
+    const int valid = (len > 0) ? len : 0;
+    cur = in;
+    curLen = valid;
+    if(mode == 0) return runEvm(in, len, ps, p0, p1, o.data());
+    std::memcpy(o.data(), in, valid*sizeof(float));
+    return runEvm(reinterpret_cast<const float*>(o.data()), len, ps, p0, p1,
+                  o.data());
+  };
+  // the expected element, whole cycles removed in double
+  auto want = [&](const float x, const int k, const double ps,
+                  const double p0, const double p1)
+  {
+    double ph = ps*static_cast<double>(x) + ((p0 - std::rint(p0)) + k*p1);
+    ph -= std::rint(ph);
+    return scale*std::polar(1.0, 2.0*M_PI*ph);
+  };
+  auto checkPast = [&](const std::vector<complex<float> >& o, const int len,
+                       const char* mname)
+  {
+    const float* of = reinterpret_cast<const float*>(o.data());
+    const int valid = (len > 0) ? len : 0;
+    for(size_t k=2*valid; k<2*o.size(); ++k)
+      if(!isSentinel(of[k]))
+        report(len, static_cast<int>(k/2), "WROTE PAST END", toCdbl(o[k/2]),
+               cdbl(), mname);
+  };
+  // ordinary values, every length, and the return value
+  for(int mode=0; mode<2; ++mode)
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len = std::min(gLengths[li], n0);
+    const int valid = (len > 0) ? len : 0;
+    const char* mname = mode ? " [in place]" : "";
+    const double r = run(src.data(), len, mode, out, phscale, phstart, phincr);
+    // the phase of element len, compared modulo whole cycles
+    const double wr = (len <= 0) ? phstart : phstart + len*phincr;
+    const double dr = (r - wr) - std::rint(r - wr);
+    ++compared;
+    if(len <= 0 ? !(r == wr) : !(std::fabs(dr) <= 1.0e-9 &&
+                                 std::fabs(r) < 1.0))
+      report(len, -1, "RETURN", cdbl(r, 0.0), cdbl(wr, 0.0), mname);
+    cur = src.data();
+    for(int k=0; k<valid; ++k)
+    {
+      const cdbl w = want(src[k], k, phscale, phstart, phincr);
+      const double e = std::abs(toCdbl(out[k]) - w)/std::fabs(scale);
+      ++compared;
+      if(e <= TOL_TRIG) worst = std::max(worst, e);
+      else report(len, k, isSentinel(out[k]) ? "NOT WRITTEN" : "",
+                  toCdbl(out[k]), w, mname);
+    }
+    checkPast(out, len, mname);
+  }
+  // special values, the phase is the input itself
+  {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<float> sp = {0.0f, -0.0f, 0.25f, -0.25f, 0.5f, -0.5f,
+        1.0f, -1.0f, 0.125f, inf, -inf, nan, 1.0e-40f, -1.0e-40f, 65537.3f,
+        -1.0e7f, 1.0e15f, -3.4e38f, 3.4e38f};
+    const int nsp = static_cast<int>(sp.size());
+    std::vector<complex<float> > o(64 + GUARD);
+    for(int mode=0; mode<2; ++mode)
+    for(int len=1; len<=40; ++len)
+    for(int start=0; start<nsp; ++start)
+    {
+      std::vector<float> in(len);
+      for(int k=0; k<len; ++k) in[k] = sp[(start + k) % nsp];
+      const char* mname = mode ? " [in place]" : "";
+      run(in.data(), len, mode, o, 1.0, 0.0, 0.0);
+      cur = in.data();
+      for(int k=0; k<len; ++k)
+      {
+        const cdbl got = toCdbl(o[k]);
+        ++compared;
+        if(bitsNan(in[k]) || bitsInf(in[k]))
+        {
+          if(!bitsNan(o[k].real()) || !bitsNan(o[k].imag()))
+            report(len, k, "NaN/INF phase", got, cdbl(nan, nan), mname);
+          continue;
+        }
+        const cdbl w = want(in[k], k, 1.0, 0.0, 0.0);
+        const double e = std::abs(got - w)/std::fabs(scale);
+        if(!(e <= TOL_TRIG + std::numeric_limits<float>::min()))
+          report(len, k, "special value", got, w, mname);
+      }
+      checkPast(o, len, mname);
+    }
+    // phases from 2^49 cycles up, which still have fractional bits in
+    // double (2^50 + 0.25 is a quarter cycle): phscale = 0, so every
+    // element's phase is phstart
+    const double big[4] = {1125899906842624.25, 2251799813685248.5,
+                           4503599627370497.0, -1125899906842624.75};
+    for(int c=0; c<4; ++c)
+    {
+      const int len = std::min(37, n0);
+      run(src.data(), len, 0, o, 0.0, big[c], 0.0);
+      for(int k=0; k<len; ++k)
+      {
+        const cdbl w = want(0.0f, k, 0.0, big[c], 0.0);
+        const double e = std::abs(toCdbl(o[k]) - w)/std::fabs(scale);
+        ++compared;
+        if(!(e <= TOL_TRIG))
+          report(len, k, "phstart past 2^49", toCdbl(o[k]), w, "");
+      }
+      checkPast(o, len, "");
+    }
+    // an infinite or NaN phstart or phincr
+    const double dinf = std::numeric_limits<double>::infinity();
+    const double dnan = std::numeric_limits<double>::quiet_NaN();
+    const double p0s[3] = {dinf, dnan, 0.25}, p1s[3] = {0.1, 0.1, -dinf};
+    for(int c=0; c<3; ++c)
+    {
+      const int len = std::min(37, n0);
+      const double r = run(src.data(), len, 0, o, phscale, p0s[c], p1s[c]);
+      ++compared;
+      if(!dblNan(r))
+        report(len, -1, "RETURN of a NaN/INF phase", cdbl(r, 0.0),
+               cdbl(dnan, 0.0), "");
+      for(int k=0; k<len; ++k)
+      {
+        ++compared;
+        if(!bitsNan(o[k].real()) || !bitsNan(o[k].imag()))
+          report(len, k, "NaN/INF phstart or phincr", toCdbl(o[k]),
+                 cdbl(dnan, dnan), "");
+      }
+      checkPast(o, len, "");
+    }
+  }
+  const bool pass = (nbad == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, tol %.0e, worst rel %.3e", name,
+         pass ? "PASS" : "FAIL", compared, TOL_TRIG, worst);
+  if(nbad) printf(", %d wrong", nbad);
+  printf("]\n");
+  if(nbad > nshown)
+    printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
 // Special values for the magnitude functions
 //
 //   runEvm(in, len, out, cout)  calls the function under test, which writes
@@ -3323,10 +3979,11 @@ int main(int argc, char** argv)
   //--- polToCart / cartToPol : polar (mag, phase) <-> cartesian -------------
   // the polar inputs are gAc as (magnitude, phase), the cartesian inputs are
   // gZc so that atan2(0, 0) is covered.  The cartesian error is measured
-  // against the magnitude, since one part can be near zero.  polToCart always
-  // uses evm_trig.h, the others use SVML when EVM_SVML is defined (icpx
+  // against the magnitude, since one part can be near zero.  polToCart,
+  // cartToPol and cartToPolRad always use evm_trig.h (in their SIMD
+  // versions), polToCartRad uses SVML when EVM_SVML is defined (icpx
   // without -DDISABLE_SVML) and evm_trig.h otherwise
-  printf("\npolar / cartesian conversion  (sin/cos of radians and atan2: %s)\n",
+  printf("\npolar / cartesian conversion  (sin/cos of radians: %s)\n",
 #if defined(EVM_SVML)
          "SVML");
 #else
@@ -3483,6 +4140,268 @@ int main(int argc, char** argv)
       [](const float* a, int n, float* o){ EVM::exp(a, n, o); });
     checkExpLogSpecial("log(float) special", true, negDenNaN,
       [](const float* a, int n, float* o){ EVM::log(a, n, o); });
+  }
+
+  //--- tune / tunecx / tunesp : out = in * e^(j*(phInit + k*phIncr)) -------
+  // tune and tunecx advance a phasor with complex multiplies, so their error
+  // may ramp up along the buffer, by 1e-8 per element on the SIMD paths
+  // (whose phasors round once per 32 elements, 16 on AVX) and 2e-7 in the
+  // default versions (once per element, from a float phase increment).
+  // tunesp's phasors come from double precision phases, so its error does
+  // not ramp up.  The phases cover an increment near pi radians (or half a
+  // cycle) and a large phInit
+  printf("\nNCO tuning\n");
+  {
+    typedef complex<float> C;
+    const std::string lvl = EVM::getOptLevel();
+    const bool simd = (lvl == "AVX512" || lvl == "AVX2" || lvl == "AVX");
+    const double drift = simd ? 1.0e-8 : 2.0e-7;
+    const std::vector<double> rad = {0.7, 0.37, -2.9, 3.1, 1000.0, -1.0e-3};
+    const std::vector<double> cyc = {0.3, 0.0123, -0.45, 0.49, 123.25, 0.4321};
+    checkTune<C>("tune(complex)", false, false, true, drift, rad,
+      [](const C* a, int n, double p, double d, C* o, C*)
+        { return EVM::tune(a, n, p, d, o); });
+    checkTune<float>("tune(real)", false, false, false, drift, rad,
+      [](const float* a, int n, double p, double d, C* o, C*)
+        { return EVM::tune(a, n, p, d, o); });
+    checkTune<C>("tune(complex) phOut", false, true, true, drift, rad,
+      [](const C* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tune(a, n, p, d, o, ph); });
+    checkTune<float>("tune(real) phOut", false, true, false, drift, rad,
+      [](const float* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tune(a, n, p, d, o, ph); });
+    checkTune<C>("tunecx(complex)", true, false, true, drift, cyc,
+      [](const C* a, int n, double p, double d, C* o, C*)
+        { return EVM::tunecx(a, n, p, d, o); });
+    checkTune<float>("tunecx(real)", true, false, false, drift, cyc,
+      [](const float* a, int n, double p, double d, C* o, C*)
+        { return EVM::tunecx(a, n, p, d, o); });
+    checkTune<C>("tunecx(complex) phOut", true, true, true, drift, cyc,
+      [](const C* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tunecx(a, n, p, d, o, ph); });
+    checkTune<float>("tunecx(real) phOut", true, true, false, drift, cyc,
+      [](const float* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tunecx(a, n, p, d, o, ph); });
+    checkTune<C>("tunesp(complex)", true, false, false, 0.0, cyc,
+      [](const C* a, int n, double p, double d, C* o, C*)
+        { return EVM::tunesp(a, n, p, d, o); });
+    checkTune<float>("tunesp(real)", true, false, false, 0.0, cyc,
+      [](const float* a, int n, double p, double d, C* o, C*)
+        { return EVM::tunesp(a, n, p, d, o); });
+    checkTune<C>("tunesp(complex) phOut", true, true, false, 0.0, cyc,
+      [](const C* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tunesp(a, n, p, d, o, ph); });
+    checkTune<float>("tunesp(real) phOut", true, true, false, 0.0, cyc,
+      [](const float* a, int n, double p, double d, C* o, C* ph)
+        { return EVM::tunesp(a, n, p, d, o, ph); });
+  }
+
+  //--- cxexp / cxexpsi / cxexpso / cxexpss : os*e^(j*(is*in + eps)) ---------
+  printf("\ncomplex exponentials  (sin/cos of radians: %s)\n",
+#if defined(EVM_SVML)
+         "SVML");
+#else
+         "evm_trig.h");
+#endif
+  {
+    typedef complex<float> C;
+    std::vector<float> xs(MAXLEN), xl(MAXLEN);
+    for(int i=0; i<MAXLEN; ++i)
+    {
+      xs[i] = 3.0f*gAf[i];        // |x| <= 6
+      xl[i] = gLr[i].imag();      // up to 1e7, past the 65536 where
+    }                             // evm_trig.h hands lanes to sincosf
+    checkCxexp("cxexp", xs, 1.0, 1.0, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexp(a, n, o); });
+    checkCxexp("cxexp large x", xl, 1.0, 1.0, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexp(a, n, o); });
+    checkCxexp("cxexpsi", xs, 2.5, 1.0, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexpsi(a, n, 2.5f, o); });
+    checkCxexp("cxexpsi eps", xs, -0.75, 1.0, -1.25f, false,
+      [](const float* a, int n, C* o)
+        { EVM::cxexpsi(a, n, -0.75f, o, -1.25f); });
+    checkCxexp("cxexpsi eps = 0", xs, 2.5, 1.0, 0.0f, false,
+      [](const float* a, int n, C* o) { EVM::cxexpsi(a, n, 2.5f, o, 0.0f); });
+    checkCxexp("cxexpso", xs, 1.0, 3.0, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexpso(a, n, 3.0f, o); });
+    checkCxexp("cxexpso large x", xl, 1.0, -0.5, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexpso(a, n, -0.5f, o); });
+    checkCxexp("cxexpso eps", xs, 1.0, -0.5, 0.3f, false,
+      [](const float* a, int n, C* o) { EVM::cxexpso(a, n, -0.5f, o, 0.3f); });
+    checkCxexp("cxexpss", xs, 2.5, -0.5, -0.0f, true,
+      [](const float* a, int n, C* o) { EVM::cxexpss(a, n, 2.5f, -0.5f, o); });
+    checkCxexp("cxexpss eps", xs, -0.75, 3.0, 0.3f, false,
+      [](const float* a, int n, C* o)
+        { EVM::cxexpss(a, n, -0.75f, 3.0f, o, 0.3f); });
+  }
+
+  //--- atan2 / atan2s / multcatan2 / multcatan2s : angles in radians -------
+  // atan2 runs on gZc, so that the zeros of all four signs are covered, and
+  // multcatan2 on gZc and gCc, a second time with the buffers passed the
+  // other way round so that the output also goes on top of in2.  The error
+  // of multcatan2 is measured against max(|angle|, 1) times |scale|: the
+  // product is rounded in float, so its angle is only within a few 2^-24 rad,
+  // which is large next to a small angle.  The SIMD versions always use
+  // evm_trig.h's atan2, as cartToPolRad does
+  printf("\narctangents  (atan2: evm_trig.h)\n");
+  {
+    typedef complex<float> C;
+    const C* Cc = gCc.data();
+    auto arg = [](const C v) { return std::arg(toCdbl(v)); };
+    // angle of a*conj(b), from the exact product
+    auto argMult = [](const C a, const C b)
+    {
+      const double ar = a.real(), ai = a.imag();
+      const double br = b.real(), bi = b.imag();
+      return std::atan2(ai*br - ar*bi, ar*br + ai*bi);
+    };
+    check<C, float, float>("atan2(complex)", TOL_TRIG, Zc, nullF,
+      [](const C* a, const float*, int n, float* o) { EVM::atan2(a, n, o); },
+      [&](int k){ return cdbl(arg(gZc[k]), 0.0); });
+    check<C, float, C>("atan2(complex) complex out", TOL_TRIG, Zc, nullF,
+      [](const C* a, const float*, int n, C* o) { EVM::atan2(a, n, o); },
+      [&](int k){ return cdbl(arg(gZc[k]), 0.0); });
+    check<C, float, float>("atan2s(complex)", TOL_TRIG, Zc, nullF,
+      [](const C* a, const float*, int n, float* o)
+        { EVM::atan2s(a, n, o, gSf); },
+      [&](int k){ return cdbl(gSf*arg(gZc[k]), 0.0); });
+    check<C, float, C>("atan2s(complex) complex out", TOL_TRIG, Zc, nullF,
+      [](const C* a, const float*, int n, C* o) { EVM::atan2s(a, n, o, gSf); },
+      [&](int k){ return cdbl(gSf*arg(gZc[k]), 0.0); });
+    check<C, C, float>("multcatan2", TOL_TRIG, Zc, Cc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2(a, b, n, o); },
+      [&](int k){ return cdbl(argMult(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::max(std::fabs(argMult(gZc[k], gCc[k])), 1.0); });
+    check<C, C, float>("multcatan2 (output on in2)", TOL_TRIG, Cc, Zc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2(b, a, n, o); },
+      [&](int k){ return cdbl(argMult(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::max(std::fabs(argMult(gZc[k], gCc[k])), 1.0); });
+    check<C, C, float>("multcatan2s", TOL_TRIG, Zc, Cc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2s(a, b, n, o, gSf); },
+      [&](int k){ return cdbl(gSf*argMult(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::fabs(gSf)*
+                         std::max(std::fabs(argMult(gZc[k], gCc[k])), 1.0); });
+    check<C, C, float>("multcatan2s (output on in2)", TOL_TRIG, Cc, Zc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2s(b, a, n, o, gSf); },
+      [&](int k){ return cdbl(gSf*argMult(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::fabs(gSf)*
+                         std::max(std::fabs(argMult(gZc[k], gCc[k])), 1.0); });
+    // zeroAngle: the angle is +0 wherever the product is zero (every third
+    // element of gZc is a zero of one of the four signs, which otherwise
+    // gives +-0 or +-pi)
+    auto argMultZ = [&](const C a, const C b)
+    {
+      const double ar = a.real(), ai = a.imag();
+      const double br = b.real(), bi = b.imag();
+      return (ar*br + ai*bi == 0.0 && ai*br - ar*bi == 0.0) ? 0.0 :
+          argMult(a, b);
+    };
+    check<C, C, float>("multcatan2 zeroAngle", TOL_TRIG, Zc, Cc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2(a, b, n, o, true); },
+      [&](int k){ return cdbl(argMultZ(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::max(std::fabs(argMultZ(gZc[k], gCc[k])), 1.0); });
+    check<C, C, float>("multcatan2s zeroAngle (out on in2)", TOL_TRIG, Cc, Zc,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2s(b, a, n, o, gSf, true); },
+      [&](int k){ return cdbl(gSf*argMultZ(gZc[k], gCc[k]), 0.0); },
+      [&](int k){ return std::fabs(gSf)*
+                         std::max(std::fabs(argMultZ(gZc[k], gCc[k])), 1.0); });
+    // in1 = +-in2: the products in the imaginary part are equal, so it must
+    // be exactly +0 on every path and the angle +0 or +pi (not -pi).  Built
+    // with FMA on the command line (-march=native, -xHost), the compiler may
+    // fuse the default version's multiply and subtraction, so there the
+    // angles only need to be within 1e-7 of 0 and near pi of either sign
+    {
+      ++gTests;
+#if defined(__FMA__)
+      const bool fused = (EVM::getOptLevel() == "SIMD Disabled");
+#else
+      const bool fused = false;
+#endif
+      std::vector<C> neg(MAXLEN);
+      std::vector<float> o0(MAXLEN), o1(MAXLEN);
+      for(int i=0; i<MAXLEN; ++i) neg[i] = -gCc[i];
+      EVM::multcatan2(Cc, Cc, MAXLEN, o0.data());
+      EVM::multcatan2(Cc, neg.data(), MAXLEN, o1.data());
+      int nbad = 0;
+      for(int i=0; i<MAXLEN; ++i)
+      {
+        const bool ok = fused ?
+            std::fabs(o0[i]) <= 1.0e-7f && std::fabs(o1[i]) > 3.0f :
+            floatBits(o0[i]) == 0 && o1[i] > 3.0f;
+        if(ok || ++nbad > MAX_REPORT) continue;
+        printf("      element %-5d in1=(%g,%g) in2=in1: %.9g, in2=-in1: %.9g\n",
+               i, gCc[i].real(), gCc[i].imag(), o0[i], o1[i]);
+      }
+      if(nbad) ++gFailed;
+      printf("  %-34s %s  [%d values each, %s", "multcatan2 of in1 = +-in2",
+             nbad ? "FAIL" : "PASS", MAXLEN,
+             fused ? "fused default, within 1e-7" : "+0 and +pi exact");
+      if(nbad) printf(", %d wrong", nbad);
+      printf("]\n");
+    }
+    // special values, with a negative scale for the scaled ones, which flips
+    // the sign of a zero angle
+    checkAtan2Special<float>("atan2 special values", false, 1.0, false,
+      [](const C* a, const C*, int n, float* o) { EVM::atan2(a, n, o); });
+    checkAtan2Special<C>("atan2 complex out special values", false, 1.0,
+      false,
+      [](const C* a, const C*, int n, C* o) { EVM::atan2(a, n, o); });
+    checkAtan2Special<float>("atan2s special values", false, -1.25,
+      false,
+      [](const C* a, const C*, int n, float* o)
+        { EVM::atan2s(a, n, o, -1.25f); });
+    checkAtan2Special<C>("atan2s complex out special values", false, -1.25,
+      false,
+      [](const C* a, const C*, int n, C* o) { EVM::atan2s(a, n, o, -1.25f); });
+    checkAtan2Special<float>("multcatan2 special values", true, 1.0, false,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2(a, b, n, o); });
+    checkAtan2Special<float>("multcatan2s special values", true, -1.25,
+      false,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2s(a, b, n, o, -1.25f); });
+    checkAtan2Special<float>("multcatan2 zeroAngle special", true, 1.0, true,
+      [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2(a, b, n, o, true); });
+    checkAtan2Special<float>("multcatan2s zeroAngle special", true, -1.25,
+      true, [](const C* a, const C* b, int n, float* o)
+        { EVM::multcatan2s(a, b, n, o, -1.25f, true); });
+  }
+
+  //--- fmmod / fmmods : scale*e^(j*2*pi*(phscale*in + phstart + i*phincr)) -
+  // phases in cycles, computed in double; the SIMD versions use evm_trig.h's
+  // sincosCycDbl.  The inputs are 3*gAf (up to 6 cycles) and, for the large
+  // input run, the phases of gLr (up to 1e7 cycles)
+  printf("\nFM modulation  (sin/cos of cycles: evm_trig.h)\n");
+  {
+    typedef complex<float> C;
+    std::vector<float> xs(MAXLEN), xl(MAXLEN);
+    for(int i=0; i<MAXLEN; ++i)
+    {
+      xs[i] = 3.0f*gAf[i];
+      xl[i] = gLr[i].imag();
+    }
+    checkFmmod("fmmod", xs, 0.37, 12345.678, 0.1234567, 1.0,
+      [](const float* a, int n, double ps, double p0, double p1, C* o)
+        { return EVM::fmmod(a, n, ps, p0, p1, o); });
+    checkFmmod("fmmod negative incr", xs, -2.5, -0.3, -0.0371, 1.0,
+      [](const float* a, int n, double ps, double p0, double p1, C* o)
+        { return EVM::fmmod(a, n, ps, p0, p1, o); });
+    checkFmmod("fmmod large input", xl, 1.0, 0.0, 0.25, 1.0,
+      [](const float* a, int n, double ps, double p0, double p1, C* o)
+        { return EVM::fmmod(a, n, ps, p0, p1, o); });
+    checkFmmod("fmmods", xs, 0.37, 12345.678, 0.1234567, -1.7,
+      [](const float* a, int n, double ps, double p0, double p1, C* o)
+        { return EVM::fmmods(a, n, ps, p0, p1, o, -1.7f); });
+    checkFmmod("fmmods large phstart", xs, 1.5, 1.0e6 + 0.3, 3.7, 0.5,
+      [](const float* a, int n, double ps, double p0, double p1, C* o)
+        { return EVM::fmmods(a, n, ps, p0, p1, o, 0.5f); });
   }
 
   //--- getSize sanity -------------------------------------------------------

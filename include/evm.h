@@ -41,12 +41,19 @@
 //    -DDISABLE_SSE
 //    -DDISABLE_SIMD (disables all branches, uses single-element "for" loops)
 //
-//  Independently, the polar/cartesian conversions use the Intel Short Vector
-//  Math Library (SVML) for their sine/cosine of radians and atan2 when it is
-//  available, otherwise they use the SIMD versions in evm_trig.h, which are
-//  slightly less accurate (up to 1.6-3.3 ulp vs. 0.6-0.9 ulp).  polToCart
-//  (phase in cycles) always uses evm_trig.h, which is faster than SVML and
-//  much more accurate for large phases.  exp and log also use SVML on the
+//  Independently, polToCartRad and the complex exponentials use the Intel
+//  Short Vector Math Library (SVML) for their sine/cosine of radians when it
+//  is available, otherwise they use the SIMD versions in evm_trig.h, which
+//  are slightly less accurate (up to 1.6-3.3 ulp vs. 0.6-0.9 ulp).
+//  polToCart (phase in cycles) always uses evm_trig.h, which is faster than
+//  SVML and much more accurate for large phases.  The atan2 of cartToPol,
+//  cartToPolRad and the arctangents (atan2, multcatan2) always comes from
+//  evm_trig.h too: with icpx's default -fp-model=fast, SVML's atan2 is no
+//  more accurate (2.4-3.4 ulp vs. 2.24 ulp), only 5-10% faster on clean data
+//  with AVX512/AVX2 (and slower with AVX), and much slower on some data,
+//  where evm_trig.h's speed doesn't change (3.4x with a NaN on AVX512,
+//  20-48% with NaN, INF or denormal values and on real-valued or zero
+//  buffers on AVX2/AVX).  exp and log also use SVML on the
 //  AVX512 and AVX paths when it is available, otherwise evm_trig.h, whose
 //  AVX512 versions are about as fast as SVML (log 6% slower).  Their AVX2
 //  versions always use evm_trig.h, which is faster than SVML's AVX2 exp and
@@ -333,10 +340,11 @@
 //    atan2 = arctangent of elements in a complex-valued buffer in radians
 //    atan2s =  arctangent of elements in a complex-valued buffer in radians
 //        with a constant scale factor applied to the output
-//    multcatan2 = atan2 in radians of the complex-conjugate multiply of two
-//        input buffers, second input conjugated
+//    multcatan2 = atan2 in radians of the complex-conjugate multiply of two
+//        input buffers, second input conjugated, optionally with an angle
+//        of +0 wherever the product is zero
 //    multcatan2s = atan2 in radians of the complex-conjugate multiply of two
-//        input buffers, second input conjugated, with a costant scale factor
+//        input buffers, second input conjugated, with a constant scale factor
 //        applied to the output
 //
 //  Specialized:
@@ -2027,17 +2035,113 @@ namespace EVM
       const float inscale, const float outscale, complex<float> * const out,
       const float eps);
 
-//    fmmod = FM modulate a buffer of real-valued input data
-//    fmmods = FM modulate a buffer of real-valued input data with a scale
-//        factor applied to the output
-//    atan2 = arctangent of elements in a complex-valued buffer in radians
-//    atan2s =  arctangent of elements in a complex-valued buffer in radians
-//        with a constant scale factor applied to the output
-//    multcatan2 = atan2 in radians of the complex-conjugate multiply of two
-//        input buffers, second input conjugated
-//    multcatan2s = atan2 in radians of the complex-conjugate multiply of two
-//        input buffers, second input conjugated, with a costant scale factor
-//        applied to the output
+  // FM-modulate a buffer of real-valued input data by generating a complex
+  // exponential with optional scale factor, static phase offset, and frequency
+  // offset.  This function does not integrate the input buffer prior to
+  // modulating, so the output will be:
+  //    out[i] = e^(j*2*pi*(phscale*in[i]+i*phincr+phstart))
+  // with all phases in cycles.  The complex exponential will be generated
+  // using a double precision phase accumulator with single precision
+  // transcendentals (sincos).  Returns the additive phase value in cycles to
+  // use as phstart of next call for phase continuity.
+  //    in = input buffer of amplitude data to FM-modulate, already integrated
+  //    len = number of elements to process
+  //    phscale = scale factor to apply to input buffer, i.e. modulation index
+  //    phstart = initial phase in cycles, added to each element
+  //    phincr = phase increment in cycles per sample for optional frequency
+  //        offset
+  //    out = output buffer of FM-modulated data
+  inline double fmmod(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out);
+  //double fmmod(double const * const in, const int len, const double phscale,
+  //    const double phstart, const double phincr,
+  //    complex<float> * const out);
+  
+  // Same as fmmod with a static scale factor applied to the FM-modulated
+  // output
+  //    in = input buffer of amplitude data to FM-modulate, already integrated
+  //    len = number of elements to process
+  //    phscale = scale factor to apply to input buffer, i.e. modulation index
+  //    phstart = initial phase in cycles, added to each element
+  //    phincr = phase increment in cycles per sample for optional frequency
+  //        offset
+  //    out = scaled output buffer of FM-modulated data
+  //    scale = scale factor to apply to output
+  inline double fmmods(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out, const float scale);
+
+  // Compute the arctangent of elements of a complex input buffer (i.e.
+  // atan2(imag, real)) in radians, output buffer may be the same as input
+  // buffer
+  //    in = buffer of complex data to compute argument of
+  //    len = number of elements to process
+  //    out = arctangent of input
+  inline void atan2(complex<float> const * const in, const int len,
+      float * const out);
+  // Overloaded function that stores the output argument (angle) in the real
+  // part of a complex output buffer and sets the imaginary part to 0, output
+  // buffer may be the same as input buffer
+  //    in = buffer of complex data to compute argument of
+  //    len = number of elements to process
+  //    out = arctangent of input stored in real part, imaginary part set to 0
+  inline void atan2(complex<float> const * const in, const int len,
+      complex<float> * const out);
+  
+  // Compute the arctangent of elements of a complex input buffer (i.e.
+  // atan2(imag, real)) in radians with output multiplied by a scale factor,
+  // output buffer may be the same as input buffer
+  //    in = buffer of complex data to compute argument of
+  //    len = number of elements to process
+  //    out = scaled arctangent of input
+  //    scale = scale factor to multiply arctangent by
+  inline void atan2s(complex<float> const * const in, const int len,
+      float * const out, const float scale);
+  // Overloaded function that stores the output argument (angle) in the real
+  // part of a complex output buffer and sets the imaginary part to 0, output
+  // buffer may be the same as input buffer
+  //    in = buffer of complex data to compute argument of
+  //    len = number of elements to process
+  //    out = scaled arctangent of input stored in real part, imaginary part
+  //        set to 0
+  //    scale = scale factor to multiply arctangent by
+  inline void atan2s(complex<float> const * const in, const int len,
+      complex<float> * const out, const float scale);
+
+  // Compute the arctangent in radians of the complex-conjugate multiply of two
+  // input buffers with the second input buffer conjugated, output may be the
+  // same as either input buffer
+  //    in1 = first input buffer for complex multiply
+  //    in2 = second input buffer for complex multiply, conjugated
+  //    len = number of elements to multiply
+  //    out = arctangent of in1*conj(in2)
+  //    zeroAngle = if true the output is +0 wherever the product is zero,
+  //        otherwise it follows atan2 for signed zeros (+-0 or +-pi)
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const bool zeroAngle);
+  // Overloaded function without zeroAngle (zeroAngle = false)
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out);
+
+  // Compute the arctangent in radians of the complex-conjugate multiply of two
+  // input buffers with the second input buffer conjugated and multiply the
+  // output by a scale factor, output may be the same as either input buffer
+  //    in1 = first input buffer for complex multiply
+  //    in2 = second input buffer for complex multiply, conjugated
+  //    len = number of elements to multiply
+  //    out = scaled arctangent of in1*conj(in2)
+  //    scale = scale factor to multiply arctangent output by
+  //    zeroAngle = if true the output is +0 wherever the product is zero,
+  //        otherwise it follows atan2 for signed zeros (+-0 or +-pi)
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale, const bool zeroAngle);
+  // Overloaded function without zeroAngle (zeroAngle = false)
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale);
 
   //=======================//
   // Specialized Functions //
@@ -28711,18 +28815,8 @@ namespace EVM
   {
     if(len<=0) return;
     __m512 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 takes a much slower path for any register with a (0,0)
-    // input (up to 5x slower on zero padded data), and gives NaN when both
-    // are denormal and denormals are treated as zero (DAZ, icpx's default).
-    // atan2(+-0,+-1) gives the same result as atan2(+-0,+-0), so re is set
-    // to +-1 where re|im compares equal to 0 (both zero, or both denormal
-    // under DAZ) before the atan2 (or'ing in the bits of 1.0 keeps the
-    // sign), the magnitude still uses the original re
-    const __m512i one = _mm512_castps_si512(_mm512_set1_ps(1.0f));
-    __mmask16 zr;
-    const __m512 sc = _mm512_set1_ps(static_cast<float>(RAD_TO_CYC));
-    #endif
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 16 angles
@@ -28735,17 +28829,7 @@ namespace EVM
       mag = _mm512_mul_ps(im, im);
       mag = _mm512_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm512_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      zr = _mm512_cmp_ps_mask(_mm512_castsi512_ps(_mm512_or_epi32(
-          _mm512_castps_si512(re), _mm512_castps_si512(im))),
-          _mm512_setzero_ps(), _CMP_EQ_OQ); // both 0 (or denormal under DAZ)
-      ang = _mm512_castsi512_ps(_mm512_mask_or_epi32(_mm512_castps_si512(re),
-          zr, _mm512_castps_si512(re), one)); // +-1 where both are +-0
-      ang = _mm512_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm512_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2Cyc512(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm512_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm512_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -28768,17 +28852,7 @@ namespace EVM
       mag = _mm512_mul_ps(im, im);
       mag = _mm512_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm512_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      zr = _mm512_cmp_ps_mask(_mm512_castsi512_ps(_mm512_or_epi32(
-          _mm512_castps_si512(re), _mm512_castps_si512(im))),
-          _mm512_setzero_ps(), _CMP_EQ_OQ); // both 0 (or denormal under DAZ)
-      ang = _mm512_castsi512_ps(_mm512_mask_or_epi32(_mm512_castps_si512(re),
-          zr, _mm512_castps_si512(re), one)); // +-1 where both are +-0
-      ang = _mm512_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm512_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2Cyc512(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm512_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm512_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld1);
@@ -28795,17 +28869,9 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
-    // note: the same as the AVX version except for the FMA in the magnitude,
-    // SVML's AVX2 atan2 is 1.2-1.4x faster than its AVX one
+    // note: the same as the AVX version except for the FMA in the magnitude
+    // and evm_trig.h's AVX2 atan2 (with FMA)
     __m256 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 gives NaN when re and im are both denormal and denormals
-    // are treated as zero (DAZ, icpx's default), atan2(+-0,+-1) gives the same
-    // result as atan2(+-0,+-0), so re is set to +-1 where re|im compares
-    // equal to 0 (or'ing in the bits of 1.0 keeps the sign)
-    const __m256 one = _mm256_set1_ps(1.0f);
-    const __m256 sc = _mm256_set1_ps(static_cast<float>(RAD_TO_CYC));
-    #endif
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles
@@ -28818,15 +28884,7 @@ namespace EVM
       mag = _mm256_mul_ps(im, im);
       mag = _mm256_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm256_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2CycAvx2(im, re);   // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -28852,15 +28910,7 @@ namespace EVM
       mag = _mm256_mul_ps(im, im);
       mag = _mm256_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm256_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2CycAvx2(im, re);   // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
@@ -28879,14 +28929,6 @@ namespace EVM
   {
     if(len<=0) return;
     __m256 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 gives NaN when re and im are both denormal and denormals
-    // are treated as zero (DAZ, icpx's default), atan2(+-0,+-1) gives the same
-    // result as atan2(+-0,+-0), so re is set to +-1 where re|im compares
-    // equal to 0 (or'ing in the bits of 1.0 keeps the sign)
-    const __m256 one = _mm256_set1_ps(1.0f);
-    const __m256 sc = _mm256_set1_ps(static_cast<float>(RAD_TO_CYC));
-    #endif
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles
@@ -28898,15 +28940,7 @@ namespace EVM
       im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
       mag = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm256_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2CycAvx(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -28931,15 +28965,7 @@ namespace EVM
       im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
       mag = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      ang = _mm256_mul_ps(ang, sc);       // radians to cycles
-      #else
       ang = TRIG::atan2CycAvx(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
@@ -28980,17 +29006,8 @@ namespace EVM
   {
     if(len<=0) return;
     __m512 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 takes a much slower path for any register with a (0,0)
-    // input (up to 5x slower on zero padded data), and gives NaN when both
-    // are denormal and denormals are treated as zero (DAZ, icpx's default).
-    // atan2(+-0,+-1) gives the same result as atan2(+-0,+-0), so re is set
-    // to +-1 where re|im compares equal to 0 (both zero, or both denormal
-    // under DAZ) before the atan2 (or'ing in the bits of 1.0 keeps the
-    // sign), the magnitude still uses the original re
-    const __m512i one = _mm512_castps_si512(_mm512_set1_ps(1.0f));
-    __mmask16 zr;
-    #endif
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 16 angles
@@ -29003,16 +29020,7 @@ namespace EVM
       mag = _mm512_mul_ps(im, im);
       mag = _mm512_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm512_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      zr = _mm512_cmp_ps_mask(_mm512_castsi512_ps(_mm512_or_epi32(
-          _mm512_castps_si512(re), _mm512_castps_si512(im))),
-          _mm512_setzero_ps(), _CMP_EQ_OQ); // both 0 (or denormal under DAZ)
-      ang = _mm512_castsi512_ps(_mm512_mask_or_epi32(_mm512_castps_si512(re),
-          zr, _mm512_castps_si512(re), one)); // +-1 where both are +-0
-      ang = _mm512_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2Rad512(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm512_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm512_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -29035,16 +29043,7 @@ namespace EVM
       mag = _mm512_mul_ps(im, im);
       mag = _mm512_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm512_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      zr = _mm512_cmp_ps_mask(_mm512_castsi512_ps(_mm512_or_epi32(
-          _mm512_castps_si512(re), _mm512_castps_si512(im))),
-          _mm512_setzero_ps(), _CMP_EQ_OQ); // both 0 (or denormal under DAZ)
-      ang = _mm512_castsi512_ps(_mm512_mask_or_epi32(_mm512_castps_si512(re),
-          zr, _mm512_castps_si512(re), one)); // +-1 where both are +-0
-      ang = _mm512_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2Rad512(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm512_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm512_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld1);
@@ -29061,16 +29060,9 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
-    // note: the same as the AVX version except for the FMA in the magnitude,
-    // SVML's AVX2 atan2 is 1.2-1.4x faster than its AVX one
+    // note: the same as the AVX version except for the FMA in the magnitude
+    // and evm_trig.h's AVX2 atan2 (with FMA)
     __m256 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 gives NaN when re and im are both denormal and denormals
-    // are treated as zero (DAZ, icpx's default), atan2(+-0,+-1) gives the same
-    // result as atan2(+-0,+-0), so re is set to +-1 where re|im compares
-    // equal to 0 (or'ing in the bits of 1.0 keeps the sign)
-    const __m256 one = _mm256_set1_ps(1.0f);
-    #endif
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles
@@ -29083,14 +29075,7 @@ namespace EVM
       mag = _mm256_mul_ps(im, im);
       mag = _mm256_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2RadAvx2(im, re);   // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -29116,14 +29101,7 @@ namespace EVM
       mag = _mm256_mul_ps(im, im);
       mag = _mm256_fmadd_ps(re, re, mag); // [|A0|^2,|A1|^2,|B0|^2,|B1|^2,...]
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2RadAvx2(im, re);   // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
@@ -29142,13 +29120,6 @@ namespace EVM
   {
     if(len<=0) return;
     __m256 ld1, ld2, re, im, mag, ang;
-    #if defined(EVM_SVML)
-    // SVML's atan2 gives NaN when re and im are both denormal and denormals
-    // are treated as zero (DAZ, icpx's default), atan2(+-0,+-1) gives the same
-    // result as atan2(+-0,+-0), so re is set to +-1 where re|im compares
-    // equal to 0 (or'ing in the bits of 1.0 keeps the sign)
-    const __m256 one = _mm256_set1_ps(1.0f);
-    #endif
     int i = 0;
     // note: the real and imaginary parts of 2 registers are separated so
     // that each atan2 call computes 8 angles
@@ -29160,14 +29131,7 @@ namespace EVM
       im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
       mag = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2RadAvx(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
@@ -29192,14 +29156,7 @@ namespace EVM
       im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
       mag = _mm256_add_ps(_mm256_mul_ps(re, re), _mm256_mul_ps(im, im));
       mag = _mm256_sqrt_ps(mag);          // [|A0|,|A1|,|B0|,|B1|,...]
-      #if defined(EVM_SVML)
-      ang = _mm256_cmp_ps(_mm256_or_ps(re, im), _mm256_setzero_ps(),
-          _CMP_EQ_OQ); // re and im both 0 (or denormal under DAZ)
-      ang = _mm256_or_ps(re, _mm256_and_ps(ang, one)); // +-1 where both 0
-      ang = _mm256_atan2_ps(im, ang);     // [arg(A0),arg(A1),arg(B0),...]
-      #else
       ang = TRIG::atan2RadAvx(im, re);    // [arg(A0),arg(A1),arg(B0),...]
-      #endif
       ld1 = _mm256_unpacklo_ps(mag, ang); // [|A0|,arg(A0),|A1|,arg(A1),...]
       ld2 = _mm256_unpackhi_ps(mag, ang); // [|B0|,arg(B0),|B1|,arg(B1),...]
       _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
@@ -30442,6 +30399,1739 @@ namespace EVM
     // (adding +0 would turn a phase of -0 into +0, and with it the sign of
     // the zero imaginary part)
     cxexpss(in, len, inscale, outscale, out, -0.0f);
+    return;
+  }
+
+  // FM modulation, input already integrated, no output scaling
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline double fmmod(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // Loop runs backwards to avoid overwriting input data before it's used
+    // input and output buffers are the same.  The blocks are counted from
+    // element 0, so the last, partial, block comes first.  Each phase,
+    // phscale*in[i] + phstart + i*phincr in cycles, is computed in double
+    // precision, using lo for elements 0-7 of the block and hi for 8-15.
+    // Whole cycles are removed from phstart, and sincosCycDbl512 removes the
+    // nearest quarter cycle in double, which is exact while
+    // phscale*in[i] + i*phincr stays below 2^49 cycles (the AVX and
+    // default versions remove whole cycles from each phase, so they are
+    // exact at any phase; this is not done for AVX512 or AVX2 as it decreases
+    // performance by blocking ports
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m512d lo, hi, base;
+    __m512 x, sn, cs;
+    const __m512d dScale = _mm512_set1_pd(phscale);
+    const __m512d dStart = _mm512_set1_pd(p0);
+    const __m512d dIncr = _mm512_set1_pd(phincr);
+    const __m512d k1 = _mm512_setr_pd(0, 1, 2, 3, 4, 5, 6, 7);
+    const __m512d k2 = _mm512_setr_pd(8, 9, 10, 11, 12, 13, 14, 15);
+    // phstart + k*phincr for the element offsets k of a block, so that a
+    // block's phases are base*phincr plus these, base being its first
+    // element (no rounding builds up, since base comes from i itself)
+    const __m512d kb1 = _mm512_fmadd_pd(k1, dIncr, dStart);
+    const __m512d kb2 = _mm512_fmadd_pd(k2, dIncr, dStart);
+    const __m512d step = _mm512_set1_pd(16.0);
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // i as a double, counted down by 16 for each block rather than
+    // converted from i: icpx's vcvtsi2sd merges into a register written by the
+    // main loop, which chained the blocks together and costs enough cycles to
+    // impact performance
+    base = _mm512_set1_pd(static_cast<double>(i));
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(x)), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb1));
+      hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_castpd_ps(
+          _mm512_extractf64x4_pd(_mm512_castps_pd(x), 1))), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDbl512(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      base = _mm512_sub_pd(base, step); // i
+      lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_loadu_ps(&in[i])), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb1));
+      hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_loadu_ps(&in[i+8])), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDbl512(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline double fmmod(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // as in the AVX-512 version, with blocks of 8: lo holds the phases of
+    // elements 0-3 and hi of 4-7, unpacklo and unpackhi interleave their
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and permute2f128
+    // regroups the halves (sincosCycDblAvx2 has the same 2^49 limit as
+    // sincosCycDbl512)
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m256d lo, hi, base;
+    __m256 x, sn, cs, ul, uh;
+    const __m256d dScale = _mm256_set1_pd(phscale);
+    const __m256d dStart = _mm256_set1_pd(p0);
+    const __m256d dIncr = _mm256_set1_pd(phincr);
+    const __m256d k1 = _mm256_setr_pd(0, 1, 2, 3);
+    const __m256d k2 = _mm256_setr_pd(4, 5, 6, 7);
+    const __m256d kb1 = _mm256_fmadd_pd(k1, dIncr, dStart); // see AVX-512
+    const __m256d kb2 = _mm256_fmadd_pd(k2, dIncr, dStart);
+    const __m256d step = _mm256_set1_pd(8.0);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // i as a double, counted down by 8 (see the AVX-512 version)
+    base = _mm256_set1_pd(static_cast<double>(i));
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      lo = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm256_castps256_ps128(x)), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb1));
+      hi = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm256_extractf128_ps(x, 1)), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDblAvx2(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1])), _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1])), _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      base = _mm256_sub_pd(base, step); // i
+      lo = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(&in[i])), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb1));
+      hi = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(&in[i+4])), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDblAvx2(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline double fmmod(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // as in the AVX2 version, without FMA; sincosCycDblAvx removes whole
+    // cycles in double itself, so it is exact at any phase
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m256d lo, hi, base;
+    __m256 x, sn, cs, ul, uh;
+    const __m256d dScale = _mm256_set1_pd(phscale);
+    const __m256d dStart = _mm256_set1_pd(p0);
+    const __m256d dIncr = _mm256_set1_pd(phincr);
+    const __m256d k1 = _mm256_setr_pd(0, 1, 2, 3);
+    const __m256d k2 = _mm256_setr_pd(4, 5, 6, 7);
+    const __m256d kb1 = _mm256_add_pd(_mm256_mul_pd(k1, dIncr), dStart);
+    const __m256d kb2 = _mm256_add_pd(_mm256_mul_pd(k2, dIncr), dStart);
+    const __m256d step = _mm256_set1_pd(8.0);
+    int i = len&~7; // start of the partial block (len if there is none)
+    // i as a double, counted down by 8 (see the AVX-512 version)
+    base = _mm256_set1_pd(static_cast<double>(i));
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      lo = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm256_castps256_ps128(x)), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb1));
+      hi = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm256_extractf128_ps(x, 1)), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb2));
+      TRIG::sincosCycDblAvx(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1])), _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1])), _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      base = _mm256_sub_pd(base, step); // i
+      lo = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm_loadu_ps(&in[i])), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb1));
+      hi = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm_loadu_ps(&in[i+4])), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb2));
+      TRIG::sincosCycDblAvx(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline double fmmod(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    float re, im; // real and imaginary part of output
+    double ph;    // double precision phase of element i in cycles
+    // iterate backwards to avoid overwriting input when out and in are same
+    // buffer.  As in tunesp, each element's phase is computed from i
+    // (without the rounding that adding phincr each time builds up), and
+    // whole cycles are removed in double before sincosf, from phstart
+    // first, so that a large phstart costs phscale*in[i] no accuracy
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    for(int i=len-1; i>=0; --i)
+    {
+      ph = phscale*in[i]+(p0+i*phincr);
+      sincosf(static_cast<float>(M_TWO_PI*(ph-rint(ph))), &im, &re);
+      out[i].real(re);
+      out[i].imag(im);
+    }
+    ph = p0+len*phincr; // phase of element len, for the next call
+    return ph-trunc(ph);
+  }
+
+  // FM modulation, input already integrated, output scaled
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline double fmmods(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // Loop runs backwards to avoid overwriting input data before it's used
+    // input and output buffers are the same.  The blocks are counted from
+    // element 0, so the last, partial, block comes first.  Each phase,
+    // phscale*in[i] + phstart + i*phincr in cycles, is computed in double
+    // precision, using lo for elements 0-7 of the block and hi for 8-15.
+    // Whole cycles are removed from phstart, and sincosCycDbl512 removes the
+    // nearest quarter cycle in double, which is exact while
+    // phscale*in[i] + i*phincr stays below 2^49 cycles (the AVX and
+    // default versions remove whole cycles from each phase, so they are
+    // exact at any phase; this is not done for AVX512 or AVX2 as it decreases
+    // performance by blocking ports
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m512d lo, hi, base;
+    __m512 x, sn, cs;
+    const __m512d dScale = _mm512_set1_pd(phscale);
+    const __m512d dStart = _mm512_set1_pd(p0);
+    const __m512d dIncr = _mm512_set1_pd(phincr);
+    const __m512d k1 = _mm512_setr_pd(0, 1, 2, 3, 4, 5, 6, 7);
+    const __m512d k2 = _mm512_setr_pd(8, 9, 10, 11, 12, 13, 14, 15);
+    // phstart + k*phincr for the element offsets k of a block, so that a
+    // block's phases are base*phincr plus these, base being its first
+    // element (no rounding builds up, since base comes from i itself)
+    const __m512d kb1 = _mm512_fmadd_pd(k1, dIncr, dStart);
+    const __m512d kb2 = _mm512_fmadd_pd(k2, dIncr, dStart);
+    const __m512d step = _mm512_set1_pd(16.0);
+    const __m512 so = _mm512_set1_ps(scale); // output scale
+    // indexes that interleave the cosines and sines of 16 elements into
+    // the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // i as a double, counted down by 16 for each block rather than
+    // converted from i: icpx's vcvtsi2sd merges into a register written by the
+    // main loop, which chained the blocks together and costs enough cycles to
+    // impact performance
+    base = _mm512_set1_pd(static_cast<double>(i));
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm512_maskz_loadu_ps(mask16(n), &in[i]);
+      lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(x)), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb1));
+      hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_castpd_ps(
+          _mm512_extractf64x4_pd(_mm512_castps_pd(x), 1))), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDbl512(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      base = _mm512_sub_pd(base, step); // i
+      lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_loadu_ps(&in[i])), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb1));
+      hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm256_loadu_ps(&in[i+8])), dScale,
+          _mm512_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDbl512(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm512_mul_ps(so, cs);
+      sn = _mm512_mul_ps(so, sn);
+      // [c0,s0,c1,s1,...,c7,s7] and [c8,s8,...,c15,s15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline double fmmods(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // as in the AVX-512 version, with blocks of 8: lo holds the phases of
+    // elements 0-3 and hi of 4-7, unpacklo and unpackhi interleave their
+    // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and permute2f128
+    // regroups the halves (sincosCycDblAvx2 has the same 2^49 limit as
+    // sincosCycDbl512)
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m256d lo, hi, base;
+    __m256 x, sn, cs, ul, uh;
+    const __m256d dScale = _mm256_set1_pd(phscale);
+    const __m256d dStart = _mm256_set1_pd(p0);
+    const __m256d dIncr = _mm256_set1_pd(phincr);
+    const __m256d k1 = _mm256_setr_pd(0, 1, 2, 3);
+    const __m256d k2 = _mm256_setr_pd(4, 5, 6, 7);
+    const __m256d kb1 = _mm256_fmadd_pd(k1, dIncr, dStart); // see AVX-512
+    const __m256d kb2 = _mm256_fmadd_pd(k2, dIncr, dStart);
+    const __m256d step = _mm256_set1_pd(8.0);
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    int i = len&~7; // start of the partial block (len if there is none)
+    // i as a double, counted down by 8 (see the AVX-512 version)
+    base = _mm256_set1_pd(static_cast<double>(i));
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      lo = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm256_castps256_ps128(x)), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb1));
+      hi = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm256_extractf128_ps(x, 1)), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDblAvx2(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1])), _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1])), _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      base = _mm256_sub_pd(base, step); // i
+      lo = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(&in[i])), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb1));
+      hi = _mm256_fmadd_pd(_mm256_cvtps_pd(_mm_loadu_ps(&in[i+4])), dScale,
+          _mm256_fmadd_pd(base, dIncr, kb2));
+      TRIG::sincosCycDblAvx2(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline double fmmods(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    // as in the AVX2 version, without FMA; sincosCycDblAvx removes whole
+    // cycles in double itself, so it is exact at any phase
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    __m256d lo, hi, base;
+    __m256 x, sn, cs, ul, uh;
+    const __m256d dScale = _mm256_set1_pd(phscale);
+    const __m256d dStart = _mm256_set1_pd(p0);
+    const __m256d dIncr = _mm256_set1_pd(phincr);
+    const __m256d k1 = _mm256_setr_pd(0, 1, 2, 3);
+    const __m256d k2 = _mm256_setr_pd(4, 5, 6, 7);
+    const __m256d kb1 = _mm256_add_pd(_mm256_mul_pd(k1, dIncr), dStart);
+    const __m256d kb2 = _mm256_add_pd(_mm256_mul_pd(k2, dIncr), dStart);
+    const __m256d step = _mm256_set1_pd(8.0);
+    const __m256 so = _mm256_set1_ps(scale); // output scale
+    int i = len&~7; // start of the partial block (len if there is none)
+    // i as a double, counted down by 8 (see the AVX-512 version)
+    base = _mm256_set1_pd(static_cast<double>(i));
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      x = _mm256_maskload_ps(&in[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[n])));
+      lo = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm256_castps256_ps128(x)), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb1));
+      hi = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm256_extractf128_ps(x, 1)), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb2));
+      TRIG::sincosCycDblAvx(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1])), _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1])), _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      base = _mm256_sub_pd(base, step); // i
+      lo = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm_loadu_ps(&in[i])), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb1));
+      hi = _mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(
+          _mm_loadu_ps(&in[i+4])), dScale),
+          _mm256_add_pd(_mm256_mul_pd(base, dIncr), kb2));
+      TRIG::sincosCycDblAvx(lo, hi, sn, cs); // sin, cos of 2*pi*phase
+      cs = _mm256_mul_ps(so, cs);
+      sn = _mm256_mul_ps(so, sn);
+      ul = _mm256_unpacklo_ps(cs, sn); // elements 0,1|4,5
+      uh = _mm256_unpackhi_ps(cs, sn); // elements 2,3|6,7
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(ul, uh, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(ul, uh, 0x20));
+    }
+    const double ph = p0+len*phincr; // phase of element len, next call
+    return ph-trunc(ph);
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline double fmmods(float const * const in, const int len,
+      const double phscale, const double phstart, const double phincr,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return phstart; // no elements: the phase is unchanged
+    float re, im; // real and imaginary part of output
+    double ph;    // double precision phase of element i in cycles
+    // iterate backwards to avoid overwriting input when out and in are same
+    // buffer.  As in tunesp, each element's phase is computed from i
+    // (without the rounding that adding phincr each time builds up), and
+    // whole cycles are removed in double before sincosf, from phstart
+    // first, so that a large phstart costs phscale*in[i] no accuracy
+    const double p0 = phstart-rint(phstart); // phstart less whole cycles
+    for(int i=len-1; i>=0; --i)
+    {
+      ph = phscale*in[i]+(p0+i*phincr);
+      sincosf(static_cast<float>(M_TWO_PI*(ph-rint(ph))), &im, &re);
+      out[i].real(scale*re);
+      out[i].imag(scale*im);
+    }
+    ph = p0+len*phincr; // phase of element len, for the next call
+    return ph-trunc(ph);
+  }
+
+  // atan2, real out
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void atan2(complex<float> const * const in, const int len,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      _mm512_mask_storeu_ps(&out[i], mask16(rem), ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void atan2(complex<float> const * const in, const int len,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    // the shuffles below leave the elements in the order
+    // [0,1,4,5|2,3,6,7], this puts the angles back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void atan2(complex<float> const * const in, const int len,
+      float * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, lo, hi, re, im;
+    // the 128-bit halves are regrouped first, so the shuffles give the
+    // real and imaginary parts in element order
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      re = _mm256_shuffle_ps(lo, hi, 0x88); // real parts
+      im = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      re = _mm256_shuffle_ps(lo, hi, 0x88); // real parts
+      im = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void atan2(complex<float> const * const in, const int len,
+      float * const out)
+  {
+    // note: where im is 0 the angle only depends on the sign of re, so re is
+    // moved away from 0 by +-1 there (keeping its sign, without a branch):
+    // icpx vectorizes this loop with SVML, whose atan2 gives NaN when re and
+    // im are both denormal and denormals are treated as zero (DAZ, icpx's
+    // default)
+    float ph;
+    for(int i=0; i<len; ++i)
+    {
+      ph = atan2f(in[i].imag(), in[i].real() +
+          copysignf(in[i].imag() == 0.0f, in[i].real()));
+      out[i] = ph;
+    }
+    return;
+  }
+
+  // atan2, complex out
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void atan2(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    const __m512 zero = _mm512_setzero_ps();
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 16 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm512_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm512_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld2);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1, reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm512_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm512_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void atan2(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 zero = _mm256_setzero_ps();
+    // note: the same as the AVX version except for evm_trig.h's AVX2
+    // atan2 (with FMA), which is about 10% faster
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 8 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx2(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx2(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void atan2(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 zero = _mm256_setzero_ps();
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 8 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx(im, re);  // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx(im, re);  // [arg(A0),arg(A1),arg(B0),...]
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void atan2(complex<float> const * const in, const int len,
+      complex<float> * const out)
+  {
+    // note: re is adjusted as in atan2 (see there)
+    float ph;
+    for(int i=0; i<len; ++i)
+    {
+      ph = atan2f(in[i].imag(), in[i].real() +
+          copysignf(in[i].imag() == 0.0f, in[i].real()));
+      out[i].real(ph);
+      out[i].imag(0.0f);
+    }
+    return;
+  }
+  
+  // atan2 w/output scaled, real out
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      float * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts
+      im = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      _mm512_mask_storeu_ps(&out[i], mask16(rem), ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      float * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // the shuffles below leave the elements in the order
+    // [0,1,4,5|2,3,6,7], this puts the angles back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      float * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, lo, hi, re, im;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // the 128-bit halves are regrouped first, so the shuffles give the
+    // real and imaginary parts in element order
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      re = _mm256_shuffle_ps(lo, hi, 0x88); // real parts
+      im = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      re = _mm256_shuffle_ps(lo, hi, 0x88); // real parts
+      im = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      float * const out, const float scale)
+  {
+    // note: re is adjusted as in atan2 (see there)
+    float ph;
+    for(int i=0; i<len; ++i)
+    {
+      ph = atan2f(in[i].imag(), in[i].real() +
+          copysignf(in[i].imag() == 0.0f, in[i].real()));
+      out[i] = scale*ph;
+    }
+    return;
+  }
+  
+  // atan2 w/output scaled, complex out
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, re, im;
+    const __m512 zero = _mm512_setzero_ps();
+    const __m512 sc = _mm512_set1_ps(scale);
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 16 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      ld2 = _mm512_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm512_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld2);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1, reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in[i+8]));
+      re = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm512_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      ld2 = _mm512_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm512_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 sc = _mm256_set1_ps(scale);
+    // note: the same as the AVX version except for evm_trig.h's AVX2
+    // atan2 (with FMA), which is about 10% faster
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 8 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx2(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx2(im, re); // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      complex<float> * const out, const float scale)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, re, im;
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 sc = _mm256_set1_ps(scale);
+    int i = 0;
+    // note: the real and imaginary parts of 2 registers are separated so
+    // that each atan2 call computes 8 angles, unpacklo and unpackhi then
+    // interleave them with zeros in the order of the first and second
+    // register
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx(im, re);  // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the masks select 2 floats per
+    // complex element, and a zero mask reads and writes nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]), mk2);
+      re = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Ar0,Ar1,Br0,Br1,...]
+      im = _mm256_shuffle_ps(ld1, ld2, 0xdd); // [Ai0,Ai1,Bi0,Bi1,...]
+      ld1 = TRIG::atan2RadAvx(im, re);  // [arg(A0),arg(A1),arg(B0),...]
+      ld1 = _mm256_mul_ps(ld1, sc);
+      ld2 = _mm256_unpackhi_ps(ld1, zero); // [arg(B0),0,arg(B1),0,...]
+      ld1 = _mm256_unpacklo_ps(ld1, zero); // [arg(A0),0,arg(A1),0,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1, ld1);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2, ld2);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void atan2s(complex<float> const * const in, const int len,
+      complex<float> * const out, const float scale)
+  {
+    // note: re is adjusted as in atan2 (see there)
+    float ph;
+    for(int i=0; i<len; ++i)
+    {
+      ph = atan2f(in[i].imag(), in[i].real() +
+          copysignf(in[i].imag() == 0.0f, in[i].real()));
+      out[i].real(scale*ph);
+      out[i].imag(0.0f);
+    }
+    return;
+  }
+
+  // atan2(in1*conj(in2))
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, ar, ai, br, bi, re, im, aibr, arbi;
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // the imaginary part rounds both of its products before the subtraction,
+    // as the AVX and default versions do, so that it is exactly 0 where they
+    // are equal: in1 = +-in2 gives an angle of exactly 0 or +pi on every path
+    // (with an FMA, about +-2^-25 or either of +-pi).  The empty asm hides the
+    // products from the optimizer, which would otherwise fuse a multiply and
+    // the subtraction into an FMA (it emits no instructions)
+    // zeroAngle: the angle is +0 wherever the product is 0, rather than
+    // atan2's +-0 or +-pi.  re|im compares equal to 0 exactly there (both
+    // parts zero, or denormal under DAZ, as re == 0 && im == 0 does in the
+    // default version).  The flag is the same for every element, so the
+    // compiler moves the test out of the loop
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements of each input
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ar = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in1
+      ai = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in1
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      br = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in2
+      bi = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi));
+      aibr = _mm512_mul_ps(ai, br);
+      arbi = _mm512_mul_ps(ar, bi);
+      __asm__("" : "+v"(aibr), "+v"(arbi)); // no FMA (see above)
+      im = _mm512_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm512_maskz_mov_ps(_mm512_cmp_ps_mask(_mm512_castsi512_ps(
+            _mm512_or_epi32(_mm512_castps_si512(re), _mm512_castps_si512(im))),
+            _mm512_setzero_ps(), _CMP_NEQ_UQ), ld1);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in1[i+8]));
+      ar = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in1
+      ai = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in1
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in2[i+8]));
+      br = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in2
+      bi = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi));
+      aibr = _mm512_mul_ps(ai, br);
+      arbi = _mm512_mul_ps(ar, bi);
+      __asm__("" : "+v"(aibr), "+v"(arbi)); // no FMA (see above)
+      im = _mm512_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm512_maskz_mov_ps(_mm512_cmp_ps_mask(_mm512_castsi512_ps(
+            _mm512_or_epi32(_mm512_castps_si512(re), _mm512_castps_si512(im))),
+            _mm512_setzero_ps(), _CMP_NEQ_UQ), ld1);
+      _mm512_mask_storeu_ps(&out[i], mask16(rem), ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ar, ai, br, bi, re, im, aibr, arbi;
+    // the shuffles below leave the elements in the order
+    // [0,1,4,5|2,3,6,7], this puts the angles back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    // the imaginary part rounds both of its products before the subtraction,
+    // as the AVX and default versions do, so that it is exactly 0 where they
+    // are equal: in1 = +-in2 gives an angle of exactly 0 or +pi on every path
+    // (with an FMA, about +-2^-25 or either of +-pi).  The empty asm hides the
+    // products from the optimizer, which would otherwise fuse a multiply and
+    // the subtraction into an FMA (it emits no instructions)
+    // zeroAngle: +0 wherever the product is 0 (see the AVX-512 version)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements of each input
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      br = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i+4]), mk2);
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i+4]), mk2);
+      br = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, lo, hi, ar, ai, br, bi, re, im, aibr, arbi;
+    // the 128-bit halves are regrouped first, so the shuffles give the
+    // real and imaginary parts in element order
+    // the empty asm keeps the products of the imaginary part rounded before
+    // the subtraction (see the AVX-512 version) where FMA is enabled on the
+    // command line, which also applies it to this version
+    // zeroAngle: +0 wherever the product is 0 (see the AVX-512 version)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements of each input
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      ar = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      br = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      ar = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      br = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const bool zeroAngle)
+  {
+    // note: the same adjustment of re as in atan2 (see there), and with
+    // zeroAngle the angle is +0 wherever the product is 0.  The loop is
+    // written out for each case, since icpx keeps the test inside its
+    // vectorized loop otherwise (10-17% slower with zeroAngle false)
+    float re, im, ph;
+    if(zeroAngle)
+    {
+      for(int i=0; i<len; ++i)
+      {
+        re = in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag();
+        im = in2[i].real()*in1[i].imag()-in1[i].real()*in2[i].imag();
+        ph = atan2f(im, re + copysignf(im == 0.0f, re));
+        if(re == 0.0f && im == 0.0f) ph = 0.0f;
+        out[i] = ph;
+      }
+      return;
+    }
+    for(int i=0; i<len; ++i)
+    {
+      re = in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag();
+      im = in2[i].real()*in1[i].imag()-in1[i].real()*in2[i].imag();
+      ph = atan2f(im, re + copysignf(im == 0.0f, re));
+      out[i] = ph;
+    }
+    return;
+  }
+
+  // multcatan2 without zeroAngle (zeroAngle = false), a plain wrapper that
+  // must be defined after every target version so the call goes through the
+  // runtime dispatcher
+  inline void multcatan2(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out)
+  {
+    multcatan2(in1, in2, len, out, false);
+    return;
+  }
+
+  // atan2(in1*conj(in2)) w/output scale
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale, const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m512 ld1, ld2, ar, ai, br, bi, re, im, aibr, arbi;
+    const __m512 sc = _mm512_set1_ps(scale);
+    // indices to split 2 registers of complex elements into a register of
+    // real parts and one of imaginary parts, both in element order
+    const __m512i pre = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,
+        26,28,30);
+    const __m512i pim = _mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,
+        27,29,31);
+    // the imaginary part rounds both of its products before the subtraction,
+    // as the AVX and default versions do, so that it is exactly 0 where they
+    // are equal: in1 = +-in2 gives an angle of exactly 0 or +pi on every path
+    // (with an FMA, about +-2^-25 or either of +-pi).  The empty asm hides the
+    // products from the optimizer, which would otherwise fuse a multiply and
+    // the subtraction into an FMA (it emits no instructions)
+    // zeroAngle: the angle is +0 wherever the product is 0, rather than
+    // atan2's +-0 or +-pi.  re|im compares equal to 0 exactly there (both
+    // parts zero, or denormal under DAZ, as re == 0 && im == 0 does in the
+    // default version).  The flag is the same for every element, so the
+    // compiler moves the test out of the loop
+    // note: evm_trig.h's atan2, also where SVML is available (see the file
+    // header)
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 complex elements of each input
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i+8]));
+      ar = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in1
+      ai = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in1
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i+8]));
+      br = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in2
+      bi = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi));
+      aibr = _mm512_mul_ps(ai, br);
+      arbi = _mm512_mul_ps(ar, bi);
+      __asm__("" : "+v"(aibr), "+v"(arbi)); // no FMA (see above)
+      im = _mm512_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm512_maskz_mov_ps(_mm512_cmp_ps_mask(_mm512_castsi512_ps(
+            _mm512_or_epi32(_mm512_castps_si512(re), _mm512_castps_si512(im))),
+            _mm512_setzero_ps(), _CMP_NEQ_UQ), ld1);
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16) as 2 registers, the
+    // second is 0 if 8 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk1 = mask16(std::min(rem, 8)<<1);
+      const __mmask16 mk2 = mask16(std::max(rem-8, 0)<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in1[i+8]));
+      ar = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in1
+      ai = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in1
+      ld1 = _mm512_maskz_loadu_ps(mk1,
+          reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm512_maskz_loadu_ps(mk2,
+          reinterpret_cast<float const *>(&in2[i+8]));
+      br = _mm512_permutex2var_ps(ld1, pre, ld2); // real parts of in2
+      bi = _mm512_permutex2var_ps(ld1, pim, ld2); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm512_fmadd_ps(ar, br, _mm512_mul_ps(ai, bi));
+      aibr = _mm512_mul_ps(ai, br);
+      arbi = _mm512_mul_ps(ar, bi);
+      __asm__("" : "+v"(aibr), "+v"(arbi)); // no FMA (see above)
+      im = _mm512_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2Rad512(im, re); // [arg(0),...,arg(15)]
+      ld1 = _mm512_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm512_maskz_mov_ps(_mm512_cmp_ps_mask(_mm512_castsi512_ps(
+            _mm512_or_epi32(_mm512_castps_si512(re), _mm512_castps_si512(im))),
+            _mm512_setzero_ps(), _CMP_NEQ_UQ), ld1);
+      _mm512_mask_storeu_ps(&out[i], mask16(rem), ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale, const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, ar, ai, br, bi, re, im, aibr, arbi;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // the shuffles below leave the elements in the order
+    // [0,1,4,5|2,3,6,7], this puts the angles back in element order
+    const __m256i p1 = _mm256_setr_epi32(0,1,4,5,2,3,6,7);
+    // the imaginary part rounds both of its products before the subtraction,
+    // as the AVX and default versions do, so that it is exactly 0 where they
+    // are equal: in1 = +-in2 gives an angle of exactly 0 or +pi on every path
+    // (with an FMA, about +-2^-25 or either of +-pi).  The empty asm hides the
+    // products from the optimizer, which would otherwise fuse a multiply and
+    // the subtraction into an FMA (it emits no instructions)
+    // zeroAngle: +0 wherever the product is 0 (see the AVX-512 version)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements of each input
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      br = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i+4]), mk2);
+      ar = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i+4]), mk2);
+      br = _mm256_shuffle_ps(ld1, ld2, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(ld1, ld2, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_fmadd_ps(ar, br, _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx2(im, re); // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      ld1 = _mm256_permutevar8x32_ps(ld1, p1); // element order
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale, const bool zeroAngle)
+  {
+    if(len<=0) return;
+    __m256 ld1, ld2, lo, hi, ar, ai, br, bi, re, im, aibr, arbi;
+    const __m256 sc = _mm256_set1_ps(scale);
+    // the 128-bit halves are regrouped first, so the shuffles give the
+    // real and imaginary parts in element order
+    // the empty asm keeps the products of the imaginary part rounded before
+    // the subtraction (see the AVX-512 version) where FMA is enabled on the
+    // command line, which also applies it to this version
+    // zeroAngle: +0 wherever the product is 0 (see the AVX-512 version)
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements of each input
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      ar = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i+4]));
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      br = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8) as 2 registers, the
+    // second is 0 if 4 or fewer remain (the load masks select 2 floats per
+    // complex element, and a zero mask reads nothing)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i mk1 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::min(rem, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[std::max(rem-4, 0)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      ar = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in1
+      ai = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in1
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]), mk1);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i+4]), mk2);
+      lo = _mm256_permute2f128_ps(ld1, ld2, 0x20); // elements [0,1|4,5]
+      hi = _mm256_permute2f128_ps(ld1, ld2, 0x31); // elements [2,3|6,7]
+      br = _mm256_shuffle_ps(lo, hi, 0x88); // real parts of in2
+      bi = _mm256_shuffle_ps(lo, hi, 0xdd); // imaginary parts of in2
+      // in1*conj(in2) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+      re = _mm256_add_ps(_mm256_mul_ps(ar, br), _mm256_mul_ps(ai, bi));
+      aibr = _mm256_mul_ps(ai, br);
+      arbi = _mm256_mul_ps(ar, bi);
+      __asm__("" : "+x"(aibr), "+x"(arbi)); // no FMA (see above)
+      im = _mm256_sub_ps(aibr, arbi);
+      ld1 = TRIG::atan2RadAvx(im, re);  // angles
+      ld1 = _mm256_mul_ps(ld1, sc);
+      if(zeroAngle) // +0 where the product is 0
+        ld1 = _mm256_andnot_ps(_mm256_cmp_ps(_mm256_or_ps(re, im),
+            _mm256_setzero_ps(), _CMP_EQ_OQ), ld1);
+      _mm256_maskstore_ps(&out[i], _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem])), ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale, const bool zeroAngle)
+  {
+    // note: the same adjustment of re as in atan2 (see there), and with
+    // zeroAngle the angle is +0 wherever the product is 0.  The loop is
+    // written out for each case, since icpx keeps the test inside its
+    // vectorized loop otherwise (10-17% slower with zeroAngle false)
+    float re, im, ph;
+    if(zeroAngle)
+    {
+      for(int i=0; i<len; ++i)
+      {
+        re = in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag();
+        im = in2[i].real()*in1[i].imag()-in1[i].real()*in2[i].imag();
+        ph = scale*atan2f(im, re + copysignf(im == 0.0f, re));
+        if(re == 0.0f && im == 0.0f) ph = 0.0f;
+        out[i] = ph;
+      }
+      return;
+    }
+    for(int i=0; i<len; ++i)
+    {
+      re = in1[i].real()*in2[i].real()+in1[i].imag()*in2[i].imag();
+      im = in2[i].real()*in1[i].imag()-in1[i].real()*in2[i].imag();
+      ph = atan2f(im, re + copysignf(im == 0.0f, re));
+      out[i] = scale*ph;
+    }
+    return;
+  }
+
+  // multcatan2s without zeroAngle (zeroAngle = false), a plain wrapper that
+  // must be defined after every target version so the call goes through the
+  // runtime dispatcher
+  inline void multcatan2s(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float * const out,
+      const float scale)
+  {
+    multcatan2s(in1, in2, len, out, scale, false);
     return;
   }
   
