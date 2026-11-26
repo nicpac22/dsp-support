@@ -42,9 +42,11 @@
 //    -DDISABLE_SIMD (disables all branches, uses single-element "for" loops)
 //
 //  Independently, polToCartRad and the complex exponentials use the Intel
-//  Short Vector Math Library (SVML) for their sine/cosine of radians when it
-//  is available, otherwise they use the SIMD versions in evm_trig.h, which
-//  are slightly less accurate (up to 1.6-3.3 ulp vs. 0.6-0.9 ulp).
+//  Short Vector Math Library (SVML) for their sine/cosine of radians on the
+//  AVX512 and AVX2 paths when it is available, otherwise they use the SIMD
+//  versions in evm_trig.h, which are slightly less accurate (up to 1.6-3.3
+//  ulp vs. 0.6-0.9 ulp).  Their AVX versions always use evm_trig.h, which
+//  is faster there than SVML's AVX sine/cosine.
 //  polToCart (phase in cycles) always uses evm_trig.h, which is faster than
 //  SVML and much more accurate for large phases.  The atan2 of cartToPol,
 //  cartToPolRad and the arctangents (atan2, multcatan2) always comes from
@@ -53,13 +55,15 @@
 //  with AVX512/AVX2 (and slower with AVX), and much slower on some data,
 //  where evm_trig.h's speed doesn't change (3.4x with a NaN on AVX512,
 //  20-48% with NaN, INF or denormal values and on real-valued or zero
-//  buffers on AVX2/AVX).  exp and log also use SVML on the
-//  AVX512 and AVX paths when it is available, otherwise evm_trig.h, whose
-//  AVX512 versions are about as fast as SVML (log 6% slower).  Their AVX2
-//  versions always use evm_trig.h, which is faster than SVML's AVX2 exp and
-//  log (14% and 12% less time) and has no slow path for special values
-//  (SVML's takes 4.5-7x as long for a register with a NaN, a zero, a
-//  negative number, or an exp result near overflow or below FLT_MIN).
+//  buffers on AVX2/AVX).  exp and log use SVML only on the AVX path when it
+//  is available, otherwise evm_trig.h.  Their AVX512 versions always use
+//  evm_trig.h, which is about as fast as SVML while the input and output
+//  fit in the L1 cache and much faster beyond that, where SVML's slows
+//  down.  Their AVX2 versions always use evm_trig.h too, which is faster
+//  than SVML's AVX2 exp and log (14% and 12% less time) and has no slow
+//  path for special values (SVML's takes 4.5-7x as long for a register
+//  with a NaN, a zero, a negative number, or an exp result near overflow
+//  or below FLT_MIN).
 //  evm_trig.h's exp and log are within 1.14 and 2.8 ulp, vs. 1.1-4 ulp for
 //  SVML with icpx's default -fp-model=fast (0.7-0.9 ulp with
 //  -fp-model=precise).  SVML will automatically be enabled when the Intel
@@ -28735,6 +28739,8 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     __m256 ld1, ld2, mag, ph, sn, cs;
     int i = 0;
     // note: the magnitudes and phases of 2 registers are separated so that
@@ -28745,11 +28751,7 @@ namespace EVM
       ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
       mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
       ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph);          // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs);          // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
       sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
       ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
@@ -28774,11 +28776,7 @@ namespace EVM
             masks[(rem-4)<<1])));
       mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
       ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph);          // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs);          // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
       sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
       ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
@@ -29198,16 +29196,15 @@ namespace EVM
   inline void exp(float const * const in, const int len, float * const out)
   {
     if(len<=0) return;
+    // note: always evm_trig.h, even with SVML: SVML's AVX-512 exp slows down
+    // once the input and output no longer fit in the L1 cache, while
+    // evm_trig.h's table-driven version keeps its speed
     __m512 ld;
     int i = 0;
     for(; i<len-15; i+=16) // process 16 real elements per register
     {
       ld = _mm512_loadu_ps(&in[i]);
-      #if defined(EVM_SVML)
-      ld = _mm512_exp_ps(ld);
-      #else
       ld = TRIG::exp512(ld);
-      #endif
       _mm512_storeu_ps(&out[i], ld);
     }
     // handle remaining elements (note len&15 == len%16)
@@ -29216,11 +29213,7 @@ namespace EVM
     {
       const __mmask16 mk = mask16(rem);
       ld = _mm512_maskz_loadu_ps(mk, &in[i]);
-      #if defined(EVM_SVML)
-      ld = _mm512_exp_ps(ld);
-      #else
       ld = TRIG::exp512(ld);
-      #endif
       _mm512_mask_storeu_ps(&out[i], mk, ld);
     }
     return;
@@ -29304,16 +29297,15 @@ namespace EVM
   inline void log(float const * const in, const int len, float * const out)
   {
     if(len<=0) return;
+    // note: always evm_trig.h, even with SVML: SVML's AVX-512 log slows down
+    // once the input and output no longer fit in the L1 cache, while
+    // evm_trig.h's table-driven version keeps its speed
     __m512 ld;
     int i = 0;
     for(; i<len-15; i+=16) // process 16 real elements per register
     {
       ld = _mm512_loadu_ps(&in[i]);
-      #if defined(EVM_SVML)
-      ld = _mm512_log_ps(ld);
-      #else
       ld = TRIG::log512(ld);
-      #endif
       _mm512_storeu_ps(&out[i], ld);
     }
     // handle remaining elements (note len&15 == len%16), the unused lanes
@@ -29323,11 +29315,7 @@ namespace EVM
     {
       const __mmask16 mk = mask16(rem);
       ld = _mm512_mask_loadu_ps(_mm512_set1_ps(1.0f), mk, &in[i]);
-      #if defined(EVM_SVML)
-      ld = _mm512_log_ps(ld);
-      #else
       ld = TRIG::log512(ld);
-      #endif
       _mm512_mask_storeu_ps(&out[i], mk, ld);
     }
     return;
@@ -29527,6 +29515,8 @@ namespace EVM
       complex<float> * const out)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     // as in the AVX-512 version.  unpacklo and unpackhi interleave the
     // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
     // permute2f128 regroups their halves (AVX has no permute across the
@@ -29541,11 +29531,7 @@ namespace EVM
       const int n = len-i;
       ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[n])));
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
           masks[std::min(n, 4)<<1]));
       const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
@@ -29560,11 +29546,7 @@ namespace EVM
     for(i-=8; i>=0; i-=8) // process 8 elements
     {
       ph = _mm256_loadu_ps(&in[i]);
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       lo = _mm256_unpacklo_ps(cs, sn);
       hi = _mm256_unpackhi_ps(cs, sn);
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
@@ -29713,6 +29695,8 @@ namespace EVM
       const float scale, complex<float> * const out, const float eps)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     // as in the AVX-512 version.  unpacklo and unpackhi interleave the
     // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
     // permute2f128 regroups their halves (AVX has no permute across the
@@ -29730,11 +29714,7 @@ namespace EVM
       ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[n])));
       ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // scale*x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
           masks[std::min(n, 4)<<1]));
       const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
@@ -29750,11 +29730,7 @@ namespace EVM
     {
       ph = _mm256_loadu_ps(&in[i]);
       ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // scale*x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       lo = _mm256_unpacklo_ps(cs, sn);
       hi = _mm256_unpackhi_ps(cs, sn);
       _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
@@ -29920,6 +29896,8 @@ namespace EVM
       const float scale, complex<float> * const out, const float eps)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     // as in the AVX-512 version.  unpacklo and unpackhi interleave the
     // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
     // permute2f128 regroups their halves (AVX has no permute across the
@@ -29937,11 +29915,7 @@ namespace EVM
       ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[n])));
       ph = _mm256_add_ps(ph, ep); // x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
@@ -29959,11 +29933,7 @@ namespace EVM
     {
       ph = _mm256_loadu_ps(&in[i]);
       ph = _mm256_add_ps(ph, ep); // x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       lo = _mm256_unpacklo_ps(cs, sn);
@@ -30115,6 +30085,8 @@ namespace EVM
       const float scale, complex<float> * const out)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     // as in the AVX-512 version.  unpacklo and unpackhi interleave the
     // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
     // permute2f128 regroups their halves (AVX has no permute across the
@@ -30130,11 +30102,7 @@ namespace EVM
       const int n = len-i;
       ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[n])));
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
@@ -30151,11 +30119,7 @@ namespace EVM
     for(i-=8; i>=0; i-=8) // process 8 elements
     {
       ph = _mm256_loadu_ps(&in[i]);
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       lo = _mm256_unpacklo_ps(cs, sn);
@@ -30320,6 +30284,8 @@ namespace EVM
       const float eps)
   {
     if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
     // as in the AVX-512 version.  unpacklo and unpackhi interleave the
     // cosines and sines into elements 0,1|4,5 and 2,3|6,7, and
     // permute2f128 regroups their halves (AVX has no permute across the
@@ -30338,11 +30304,7 @@ namespace EVM
       ph = _mm256_maskload_ps(&in[i], _mm256_load_si256(
           reinterpret_cast<__m256i const *>(masks[n])));
       ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // inscale*x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
@@ -30360,11 +30322,7 @@ namespace EVM
     {
       ph = _mm256_loadu_ps(&in[i]);
       ph = _mm256_add_ps(_mm256_mul_ps(si, ph), ep); // inscale*x+eps
-      #if defined(EVM_SVML)
-      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
-      #else
       TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
-      #endif
       cs = _mm256_mul_ps(so, cs);
       sn = _mm256_mul_ps(so, sn);
       lo = _mm256_unpacklo_ps(cs, sn);

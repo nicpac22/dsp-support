@@ -2025,10 +2025,11 @@ static void checkTune(const char* name, const bool cyc, const bool ph,
 // must give NaN in both parts, and ph = +-0 exactly (os, os*(+-0)) with the
 // sign of the zero; the overloads without eps pass eps = -0, which keeps the
 // sign of a zero phase.  evm_trig.h's sincosRad gives sin(-0) = +0 (keeping
-// the sign would cost it 2.5-8%), so on the SIMD paths without SVML the zero
-// may have either sign.  The huge values only go through the functions
-// whose phase is exact (no scale, or eps = -0), since a rounding of the
-// phase of 1 ulp at 1e30 changes the result completely.
+// the sign would cost it 2.5-8%), so on the SIMD paths without SVML, and on
+// the AVX path, which always uses it, the zero may have either sign.  The
+// huge values only go through the functions whose phase is exact (no scale,
+// or eps = -0), since a rounding of the phase of 1 ulp at 1e30 changes the
+// result completely.
 //==============================================================================
 template<class FEVM>
 static void checkCxexp(const char* name, const std::vector<float>& src,
@@ -2041,10 +2042,10 @@ static void checkCxexp(const char* name, const std::vector<float>& src,
   double worst = 0.0;
   const int n0 = static_cast<int>(src.size());
   std::vector<complex<float> > out(n0 + GUARD);
-#if defined(EVM_SVML)
-  const bool anyZeroSign = false;
-#else
   const std::string lvl = EVM::getOptLevel();
+#if defined(EVM_SVML)
+  const bool anyZeroSign = (lvl == "AVX"); // AVX always uses evm_trig.h
+#else
   const bool anyZeroSign = (lvl == "AVX512" || lvl == "AVX2" || lvl == "AVX");
 #endif
   const float* of = reinterpret_cast<const float*>(out.data());
@@ -3981,11 +3982,12 @@ int main(int argc, char** argv)
   // gZc so that atan2(0, 0) is covered.  The cartesian error is measured
   // against the magnitude, since one part can be near zero.  polToCart,
   // cartToPol and cartToPolRad always use evm_trig.h (in their SIMD
-  // versions), polToCartRad uses SVML when EVM_SVML is defined (icpx
-  // without -DDISABLE_SVML) and evm_trig.h otherwise
+  // versions), polToCartRad uses SVML on the AVX-512 and AVX2 paths when
+  // EVM_SVML is defined (icpx without -DDISABLE_SVML) and evm_trig.h
+  // otherwise
   printf("\npolar / cartesian conversion  (sin/cos of radians: %s)\n",
 #if defined(EVM_SVML)
-         "SVML");
+         "SVML, evm_trig.h on AVX");
 #else
          "evm_trig.h");
 #endif
@@ -4104,14 +4106,14 @@ int main(int argc, char** argv)
 
   //--- exp / log ------------------------------------------------------------
   // exp runs on gEf ([-88, 88], results from denormals to near FLT_MAX), log
-  // on gLf (FLT_MIN to 2^125, a quarter of them near 1).  Both use SVML when
-  // EVM_SVML is defined, except on the AVX2 path, and evm_trig.h otherwise.
+  // on gLf (FLT_MIN to 2^125, a quarter of them near 1).  Both use SVML only
+  // on the AVX path when EVM_SVML is defined, and evm_trig.h otherwise.
   // TOL_EXPLOG passes SVML's
   // worst case with icpx's default fast fp-model (4 ulp) but not a wrong
   // polynomial coefficient that TOL_TRIG would let through
   printf("\nexp / log  (%s)\n",
 #if defined(EVM_SVML)
-         "SVML, evm_trig.h on AVX2");
+         "SVML on AVX, evm_trig.h on AVX-512/AVX2");
 #else
          "evm_trig.h");
 #endif
@@ -4199,7 +4201,7 @@ int main(int argc, char** argv)
   //--- cxexp / cxexpsi / cxexpso / cxexpss : os*e^(j*(is*in + eps)) ---------
   printf("\ncomplex exponentials  (sin/cos of radians: %s)\n",
 #if defined(EVM_SVML)
-         "SVML");
+         "SVML, evm_trig.h on AVX");
 #else
          "evm_trig.h");
 #endif
@@ -4319,7 +4321,11 @@ int main(int argc, char** argv)
     {
       ++gTests;
 #if defined(__FMA__)
-      const bool fused = (EVM::getOptLevel() == "SIMD Disabled");
+      // the default version runs wherever no AVX level is picked, also
+      // when getOptLevel() reports an SSE level
+      const std::string lvl = EVM::getOptLevel();
+      const bool fused = !(lvl == "AVX512" || lvl == "AVX2" ||
+                           lvl == "AVX");
 #else
       const bool fused = false;
 #endif
