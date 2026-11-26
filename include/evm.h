@@ -315,9 +315,11 @@
 //    cnvrtInt8ToFloat = convert signed 8-bit integers to 32-bit floats
 //    cnvrtInt16ToFloat = convert signed 16-bit integers to 32-bit floats
 //    cnvrtInt32ToFloat = convert signed 32-bit integers to 32-bit floats
-//    polToCart = convert a buffer of complex values from polar to cartesian
-//        coordinate system, phase in cycles
+//    polToCart = convert a buffer of complex values or separate buffers of
+//        magnitude and phase from polar to cartesian coordinate system,
+//        phase in cycles
 //    polToCartRad = same as polToCart, phase in radians
+//    polToCarts = same as polToCart, with a scale factor applied to the phase
 //    cartToPol = convert a buffer of complex values from cartesian to polar
 //        coordinate system, phase in cycles
 //    cartToPolRad = same as cartToPol, phase in radians
@@ -1856,10 +1858,65 @@ namespace EVM
   //===========//
   // Summation //
   //===========//
-//    sum = sum of elements in a buffer
-//    sumSqDiff = summed squared difference between two complex-valued buffers
-//    wsum = weighted sum of values in two buffers
+  // Compute the sum of elements in a buffer
+  //    in = buffer to sum
+  //    len = number of elements to sum
+  //    out = sum of the elements in the input buffer
+  inline void sum(float const * const in, const int len, float &out);
+  inline void sum(complex<float> const * const in, const int len,
+      complex<float> &out);
+  
+  // Compute the sum of the magnitude squared of the difference between two
+  // complex valued buffers (i.e. Euclidean norm squared of the difference
+  // between the buffers)
+  //    in1 = first buffer for difference
+  //    in2 = second buffer for difference
+  //    len = number of elements to process
+  //    out = sum of the magnitude squared of the difference between elements
+  //        of the two input buffers
+  inline void sumSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float &out);
 
+  // Point-by-point addition of the elements of two input buffers with a scale
+  // factor (weight) applied to the elements of the second input buffer, i.e.
+  // out[i] = in1[i]+weight*in2[i], output may be the same as either input,
+  // intended for spectral averaging
+  //    in1 = first buffer to sum
+  //    in2 = second buffer to sum, scaled by weight
+  //    len = number of elements to process
+  //    weight = scale factor to apply to in2
+  //    out = sum of in1 and in2 with weight applied to in2
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight, float * const out);
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight, complex<float> * const out);
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const float weight, complex<float> * const out);
+
+  // Point-by-point addition of the elements of two input buffers with two
+  // different scale factors (weights) applied to the elements of the input
+  // buffers, i.e. out[i] = weight1*in1[i]+weight2*in2[i], output may be the
+  // same as either input, intended for spectral averaging
+  //    in1 = first buffer to sum, scaled by weight1
+  //    in2 = second buffer to sum, scaled by weight2
+  //    len = number of elements to process
+  //    weight1 = scale factor to apply to in1
+  //    weight2 = scale factor to apply to in2
+  //    out = sum of in1 and in2 with weight1 applied to in1 and weight2
+  //        applied to in2
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight1, const float weight2,
+      float * const out);
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight1, const complex<float> weight2,
+      complex<float> * const out);
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const float weight1, const float weight2,
+      complex<float> * const out);
 
   //===================================//
   // Unit/Coordinate System Conversion //
@@ -1939,6 +1996,15 @@ namespace EVM
   //    out = output buffer of cartesian coordinates
   inline void polToCart(complex<float> const * const in, const int len,
       complex<float> * const out);
+  // Overloaded method that accepts magnitude and phase of polar coordinates
+  // as separate input buffers, output buffer may be the same as either
+  // input
+  //    mag = magnitude of polar to convert
+  //    phase = phase in cycles of polar to convert
+  //    len = number of elements to process
+  //    out = output buffer of cartesian coordinates
+  inline void polToCart(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out);
 
   // Convert a buffer of complex values from polar (mag, phase) to cartesian
   // (x, y) coordinate system.  Phase is expected to be in radians, output
@@ -1948,7 +2014,38 @@ namespace EVM
   //    out = output buffer of cartesian coordinates
   inline void polToCartRad(complex<float> const * const in, const int len,
       complex<float> * const out);
-
+  // Overloaded method that accepts magnitude and phase of polar coordinates
+  // as separate input buffers, output buffer may be the same as either
+  // input
+  //    mag = magnitude of polar to convert
+  //    phase = phase in radians of polar to convert
+  //    len = number of elements to process
+  //    out = output buffer of cartesian coordinates
+  inline void polToCartRad(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out);
+  
+  // Convert a buffer of complex values from polar (mag, phase) to cartesian
+  // (x, y) coordinate system with a scale factor applied to phase prior to
+  // conversion.  Phase is expected to be in cycles, output buffer may be same
+  // as input buffer.  Whole cycles are removed from the phase, so large phases
+  // keep their accuracy.
+  //    in = input buffer of polar coordinates to convert
+  //    len = number of elements to process
+  //    scale = scale factor to apply to phase
+  //    out = output buffer of cartesian coordinates
+  inline void polToCarts(complex<float> const * const in, const int len,
+      const float scale, complex<float> * const out);
+  // Overloaded method that accepts magnitude and phase of polar coordinates
+  // as separate input buffers, output buffer may be the same as either
+  // input
+  //    mag = magnitude of polar to convert
+  //    phase = phase in cycles of polar to convert
+  //    len = number of elements to process
+  //    scale = scale factor to apply to phase
+  //    out = output buffer of cartesian coordinates
+  inline void polToCarts(float const * const mag, float const * const phase,
+      const int len, const float scale, complex<float> * const out);
+  
   // Convert a buffer of complex values from cartesian (x, y) to polar
   // (mag, phase) coordinate system, returned phase is in cycles, output
   // buffer may be same as input buffer.
@@ -27342,6 +27439,1169 @@ namespace EVM
     return;
   }
 
+  //===================================//
+  // Summation Function Implementation //
+  //===================================//
+  // sum of real-valued buffer
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void sum(float const * const in, const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    // note: with a single accumulator every add waits on the previous one,
+    // instead use 8 independent accumulators, enough to keep the pipeline
+    // full on CPUs with two add units (4 of them take the remaining
+    // registers)
+    __m512 sum0 = _mm512_setzero_ps();
+    __m512 sum1 = sum0;
+    __m512 sum2 = sum0;
+    __m512 sum3 = sum0;
+    int i = 0;
+    if(len > 127)
+    {
+      __m512 sum4 = sum0;
+      __m512 sum5 = sum0;
+      __m512 sum6 = sum0;
+      __m512 sum7 = sum0;
+      for(; i<len-127; i+=128) // process 8 registers (128 real elements)
+      {
+        sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&in[i]));
+        sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&in[i+16]));
+        sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&in[i+32]));
+        sum3 = _mm512_add_ps(sum3, _mm512_loadu_ps(&in[i+48]));
+        sum4 = _mm512_add_ps(sum4, _mm512_loadu_ps(&in[i+64]));
+        sum5 = _mm512_add_ps(sum5, _mm512_loadu_ps(&in[i+80]));
+        sum6 = _mm512_add_ps(sum6, _mm512_loadu_ps(&in[i+96]));
+        sum7 = _mm512_add_ps(sum7, _mm512_loadu_ps(&in[i+112]));
+      }
+      sum0 = _mm512_add_ps(sum0, sum4);
+      sum1 = _mm512_add_ps(sum1, sum5);
+      sum2 = _mm512_add_ps(sum2, sum6);
+      sum3 = _mm512_add_ps(sum3, sum7);
+    }
+    // 0-7 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    // bit 6 indicates there are at least 64 elements that weren't taken care
+    // of by the loop above
+    if(len&64) // process 4 registers (64 real elements)
+    {
+      sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&in[i]));
+      sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&in[i+16]));
+      sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&in[i+32]));
+      sum3 = _mm512_add_ps(sum3, _mm512_loadu_ps(&in[i+48]));
+      i += 64;
+    }
+    // bit 5 indicates there are an additional 32 elements not taken care of
+    // by the loop above
+    if(len&32) // process 2 registers (32 real elements)
+    {
+      sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&in[i]));
+      sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&in[i+16]));
+      i += 32;
+    }
+    // bit 4 indicates there were an additional 16 elements not taken care of
+    // by the loop above
+    if(len&16) // 1 register (16 real elements)
+    {
+      sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&in[i]));
+      i += 16;
+    }
+    // handle remaining elements in partial register (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+      sum3 = _mm512_add_ps(sum3, _mm512_maskz_loadu_ps(mask16(rem), &in[i]));
+    sum0 = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
+    out = _mm512_reduce_add_ps(sum0);
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void sum(float const * const in, const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    // note: with a single accumulator every add waits on the previous one,
+    // instead use 8 independent accumulators, enough to keep the pipeline
+    // full on CPUs with two add units (4 of them take the remaining
+    // registers)
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = sum0;
+    __m256 sum2 = sum0;
+    __m256 sum3 = sum0;
+    __m128 hs;  // horizontal sum to finish the sum
+    int i = 0;
+    if(len > 63)
+    {
+      __m256 sum4 = sum0;
+      __m256 sum5 = sum0;
+      __m256 sum6 = sum0;
+      __m256 sum7 = sum0;
+      for(; i<len-63; i+=64) // process 8 registers (64 real elements)
+      {
+        sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&in[i]));
+        sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&in[i+8]));
+        sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&in[i+16]));
+        sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(&in[i+24]));
+        sum4 = _mm256_add_ps(sum4, _mm256_loadu_ps(&in[i+32]));
+        sum5 = _mm256_add_ps(sum5, _mm256_loadu_ps(&in[i+40]));
+        sum6 = _mm256_add_ps(sum6, _mm256_loadu_ps(&in[i+48]));
+        sum7 = _mm256_add_ps(sum7, _mm256_loadu_ps(&in[i+56]));
+      }
+      sum0 = _mm256_add_ps(sum0, sum4);
+      sum1 = _mm256_add_ps(sum1, sum5);
+      sum2 = _mm256_add_ps(sum2, sum6);
+      sum3 = _mm256_add_ps(sum3, sum7);
+    }
+    // 0-7 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    // bit 5 indicates there are at least 32 elements that weren't taken care
+    // of by the loop above
+    if(len&32) // 4 registers (32 real elements)
+    {
+      sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&in[i]));
+      sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&in[i+8]));
+      sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&in[i+16]));
+      sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(&in[i+24]));
+      i += 32;
+    }
+    // bit 4 indicates there are an additional 16 elements not taken care of
+    // by the loop above
+    if(len&16) // 2 registers (16 real elements)
+    {
+      sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&in[i]));
+      sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&in[i+8]));
+      i += 16;
+    }
+    // bit 3 indicates there were an additional 8 elements not taken care of
+    // by the loop above
+    if(len&8) // 1 register (8 real elements)
+    {
+      sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&in[i]));
+      i += 8;
+    }
+    // handle remaining elements in partial register (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      sum3 = _mm256_add_ps(sum3, _mm256_maskload_ps(&in[i], msk));
+    }
+    sum0 = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum0, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum0), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void sum(float const * const in, const int len, float &out)
+  {
+    out = 0.0f;
+    for(int i=0; i<len; ++i) out += in[i];
+    return;
+  }
+
+  // sum of complex-valued buffer
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void sum(complex<float> const * const in, const int len,
+      complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    // note: the buffer is summed as 2*len floats, every register holds whole
+    // complex elements so the even lanes sum the real parts and the odd
+    // lanes the imaginary parts
+    float const * const fin = reinterpret_cast<float const *>(in);
+    const int n = len<<1; // number of floats
+    // note: with a single accumulator every add waits on the previous one,
+    // instead use 8 independent accumulators, enough to keep the pipeline
+    // full on CPUs with two add units (4 of them take the remaining
+    // registers)
+    __m512 sum0 = _mm512_setzero_ps();
+    __m512 sum1 = sum0;
+    __m512 sum2 = sum0;
+    __m512 sum3 = sum0;
+    __m256 hs2;  // horizontal sum, 8 elements (fold and sum halves of m512)
+    __m128 hs1;  // horizontal sum to finish the sum (fold and sum m256)
+    int i = 0;
+    if(n > 127)
+    {
+      __m512 sum4 = sum0;
+      __m512 sum5 = sum0;
+      __m512 sum6 = sum0;
+      __m512 sum7 = sum0;
+      for(; i<n-127; i+=128) // process 8 registers (64 complex elements)
+      {
+        sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&fin[i]));
+        sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&fin[i+16]));
+        sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&fin[i+32]));
+        sum3 = _mm512_add_ps(sum3, _mm512_loadu_ps(&fin[i+48]));
+        sum4 = _mm512_add_ps(sum4, _mm512_loadu_ps(&fin[i+64]));
+        sum5 = _mm512_add_ps(sum5, _mm512_loadu_ps(&fin[i+80]));
+        sum6 = _mm512_add_ps(sum6, _mm512_loadu_ps(&fin[i+96]));
+        sum7 = _mm512_add_ps(sum7, _mm512_loadu_ps(&fin[i+112]));
+      }
+      sum0 = _mm512_add_ps(sum0, sum4);
+      sum1 = _mm512_add_ps(sum1, sum5);
+      sum2 = _mm512_add_ps(sum2, sum6);
+      sum3 = _mm512_add_ps(sum3, sum7);
+    }
+    // 0-7 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    if(n&64) // process 4 registers (32 complex elements)
+    {
+      sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&fin[i]));
+      sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&fin[i+16]));
+      sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&fin[i+32]));
+      sum3 = _mm512_add_ps(sum3, _mm512_loadu_ps(&fin[i+48]));
+      i += 64;
+    }
+    if(n&32) // process 2 registers (16 complex elements)
+    {
+      sum0 = _mm512_add_ps(sum0, _mm512_loadu_ps(&fin[i]));
+      sum1 = _mm512_add_ps(sum1, _mm512_loadu_ps(&fin[i+16]));
+      i += 32;
+    }
+    if(n&16) // 1 register (8 complex elements)
+    {
+      sum2 = _mm512_add_ps(sum2, _mm512_loadu_ps(&fin[i]));
+      i += 16;
+    }
+    // handle remaining elements in partial register (note n&15 == n%16)
+    const int rem = n&15;
+    if(rem)
+      sum3 = _mm512_add_ps(sum3, _mm512_maskz_loadu_ps(mask16(rem), &fin[i]));
+    sum0 = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
+    // horizontal sum of the even and of the odd lanes, add the upper half of
+    // sum0 to the lower half (cast through double to avoid requiring the
+    // AVX512DQ instruction _mm512_extractf32x8_ps)
+    hs2 = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(sum0), 1));
+    hs2 = _mm256_add_ps(_mm512_castps512_ps256(sum0), hs2);
+    // fold and sum the halves of hs2 into hs1
+    hs1 = _mm256_extractf128_ps(hs2, 1); // extract upper half of register
+    hs1 = _mm_add_ps(_mm256_castps256_ps128(hs2), hs1); // [r0, i0, r1, i1]
+    hs1 = _mm_add_ps(hs1, _mm_movehl_ps(hs1, hs1)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs1);
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void sum(complex<float> const * const in, const int len,
+      complex<float> &out)
+  {
+    if(len<=0)
+    {
+      out.real(0.0f);
+      out.imag(0.0f);
+      return;
+    }
+    // note: the buffer is summed as 2*len floats, every register holds whole
+    // complex elements so the even lanes sum the real parts and the odd
+    // lanes the imaginary parts
+    float const * const fin = reinterpret_cast<float const *>(in);
+    const int n = len<<1; // number of floats
+    // note: with a single accumulator every add waits on the previous one,
+    // instead use 8 independent accumulators, enough to keep the pipeline
+    // full on CPUs with two add units (4 of them take the remaining
+    // registers)
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = sum0;
+    __m256 sum2 = sum0;
+    __m256 sum3 = sum0;
+    __m128 hs;  // horizontal sum to finish the sum
+    int i = 0;
+    if(n > 63)
+    {
+      __m256 sum4 = sum0;
+      __m256 sum5 = sum0;
+      __m256 sum6 = sum0;
+      __m256 sum7 = sum0;
+      for(; i<n-63; i+=64) // process 8 registers (32 complex elements)
+      {
+        sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&fin[i]));
+        sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&fin[i+8]));
+        sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&fin[i+16]));
+        sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(&fin[i+24]));
+        sum4 = _mm256_add_ps(sum4, _mm256_loadu_ps(&fin[i+32]));
+        sum5 = _mm256_add_ps(sum5, _mm256_loadu_ps(&fin[i+40]));
+        sum6 = _mm256_add_ps(sum6, _mm256_loadu_ps(&fin[i+48]));
+        sum7 = _mm256_add_ps(sum7, _mm256_loadu_ps(&fin[i+56]));
+      }
+      sum0 = _mm256_add_ps(sum0, sum4);
+      sum1 = _mm256_add_ps(sum1, sum5);
+      sum2 = _mm256_add_ps(sum2, sum6);
+      sum3 = _mm256_add_ps(sum3, sum7);
+    }
+    // 0-7 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    if(n&32) // 4 registers (16 complex elements)
+    {
+      sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&fin[i]));
+      sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&fin[i+8]));
+      sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&fin[i+16]));
+      sum3 = _mm256_add_ps(sum3, _mm256_loadu_ps(&fin[i+24]));
+      i += 32;
+    }
+    if(n&16) // 2 registers (8 complex elements)
+    {
+      sum0 = _mm256_add_ps(sum0, _mm256_loadu_ps(&fin[i]));
+      sum1 = _mm256_add_ps(sum1, _mm256_loadu_ps(&fin[i+8]));
+      i += 16;
+    }
+    if(n&8) // 1 register (4 complex elements)
+    {
+      sum2 = _mm256_add_ps(sum2, _mm256_loadu_ps(&fin[i]));
+      i += 8;
+    }
+    // handle remaining elements in partial register (note n&7 == n%8)
+    const int rem = n&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      sum3 = _mm256_add_ps(sum3, _mm256_maskload_ps(&fin[i], msk));
+    }
+    sum0 = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
+    // horizontal sum of the even and of the odd lanes
+    hs = _mm256_extractf128_ps(sum0, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum0), hs); // [r0, i0, r1, i1]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [r0+r1, i0+i1, ...]
+    // store both parts with one 8-byte store to avoid instruction stall with
+    // certain compilers
+    _mm_storel_pi(reinterpret_cast<__m64 *>(&out), hs);
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void sum(complex<float> const * const in, const int len,
+      complex<float> &out)
+  {
+    float sumx = 0.0f;
+    float sumy = 0.0f;
+    for(int i=0; i<len; ++i)
+    {
+      sumx += in[i].real();
+      sumy += in[i].imag();
+    }
+    out.real(sumx);
+    out.imag(sumy);
+    return;
+  }
+  
+  // sum of the magnitude squared of the difference of two buffers
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void sumSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    // note: |in1-in2|^2 is the sum of the squares of both parts of the
+    // difference, so the buffers are processed as 2*len floats and every
+    // squared part is summed
+    float const * const fin1 = reinterpret_cast<float const *>(in1);
+    float const * const fin2 = reinterpret_cast<float const *>(in2);
+    const int n = len<<1; // number of floats
+    __m512 df;
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    __m512 sum0 = _mm512_setzero_ps();
+    __m512 sum1 = sum0;
+    __m512 sum2 = sum0;
+    __m512 sum3 = sum0;
+    int i = 0;
+    for(; i<n-63; i+=64) // process 4 registers (32 complex elements)
+    {
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i]), _mm512_loadu_ps(&fin2[i]));
+      sum0 = _mm512_fmadd_ps(df, df, sum0);
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i+16]),
+          _mm512_loadu_ps(&fin2[i+16]));
+      sum1 = _mm512_fmadd_ps(df, df, sum1);
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i+32]),
+          _mm512_loadu_ps(&fin2[i+32]));
+      sum2 = _mm512_fmadd_ps(df, df, sum2);
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i+48]),
+          _mm512_loadu_ps(&fin2[i+48]));
+      sum3 = _mm512_fmadd_ps(df, df, sum3);
+    }
+    // 0-3 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    if(n&32) // process 2 registers (16 complex elements)
+    {
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i]), _mm512_loadu_ps(&fin2[i]));
+      sum0 = _mm512_fmadd_ps(df, df, sum0);
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i+16]),
+          _mm512_loadu_ps(&fin2[i+16]));
+      sum1 = _mm512_fmadd_ps(df, df, sum1);
+      i += 32;
+    }
+    if(n&16) // 1 register (8 complex elements)
+    {
+      df = _mm512_sub_ps(_mm512_loadu_ps(&fin1[i]), _mm512_loadu_ps(&fin2[i]));
+      sum2 = _mm512_fmadd_ps(df, df, sum2);
+      i += 16;
+    }
+    // handle remaining elements in partial register (note n&15 == n%16)
+    const int rem = n&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      df = _mm512_sub_ps(_mm512_maskz_loadu_ps(mk, &fin1[i]),
+          _mm512_maskz_loadu_ps(mk, &fin2[i]));
+      sum3 = _mm512_fmadd_ps(df, df, sum3);
+    }
+    sum0 = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
+    out = _mm512_reduce_add_ps(sum0);
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void sumSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    // note: |in1-in2|^2 is the sum of the squares of both parts of the
+    // difference, so the buffers are processed as 2*len floats and every
+    // squared part is summed
+    float const * const fin1 = reinterpret_cast<float const *>(in1);
+    float const * const fin2 = reinterpret_cast<float const *>(in2);
+    const int n = len<<1; // number of floats
+    __m256 df;
+    // note: with a single accumulator every FMA waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = sum0;
+    __m256 sum2 = sum0;
+    __m256 sum3 = sum0;
+    __m128 hs;  // horizontal sum to finish the sum
+    int i = 0;
+    for(; i<n-31; i+=32) // process 4 registers (16 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum0 = _mm256_fmadd_ps(df, df, sum0);
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+8]),
+          _mm256_loadu_ps(&fin2[i+8]));
+      sum1 = _mm256_fmadd_ps(df, df, sum1);
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+16]),
+          _mm256_loadu_ps(&fin2[i+16]));
+      sum2 = _mm256_fmadd_ps(df, df, sum2);
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+24]),
+          _mm256_loadu_ps(&fin2[i+24]));
+      sum3 = _mm256_fmadd_ps(df, df, sum3);
+    }
+    // 0-3 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    if(n&16) // 2 registers (8 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum0 = _mm256_fmadd_ps(df, df, sum0);
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+8]),
+          _mm256_loadu_ps(&fin2[i+8]));
+      sum1 = _mm256_fmadd_ps(df, df, sum1);
+      i += 16;
+    }
+    if(n&8) // 1 register (4 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum2 = _mm256_fmadd_ps(df, df, sum2);
+      i += 8;
+    }
+    // handle remaining elements in partial register (note n&7 == n%8)
+    const int rem = n&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      df = _mm256_sub_ps(_mm256_maskload_ps(&fin1[i], msk),
+          _mm256_maskload_ps(&fin2[i], msk));
+      sum3 = _mm256_fmadd_ps(df, df, sum3);
+    }
+    sum0 = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum0, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum0), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void sumSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float &out)
+  {
+    if(len<=0)
+    {
+      out = 0.0f;
+      return;
+    }
+    // note: |in1-in2|^2 is the sum of the squares of both parts of the
+    // difference, so the buffers are processed as 2*len floats and every
+    // squared part is summed
+    float const * const fin1 = reinterpret_cast<float const *>(in1);
+    float const * const fin2 = reinterpret_cast<float const *>(in2);
+    const int n = len<<1; // number of floats
+    __m256 df;
+    // note: with a single accumulator every add waits on the previous one,
+    // instead use 4 independent accumulators to keep the pipeline full
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = sum0;
+    __m256 sum2 = sum0;
+    __m256 sum3 = sum0;
+    __m128 hs;  // horizontal sum to finish the sum
+    int i = 0;
+    for(; i<n-31; i+=32) // process 4 registers (16 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum0 = _mm256_add_ps(sum0, _mm256_mul_ps(df, df));
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+8]),
+          _mm256_loadu_ps(&fin2[i+8]));
+      sum1 = _mm256_add_ps(sum1, _mm256_mul_ps(df, df));
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+16]),
+          _mm256_loadu_ps(&fin2[i+16]));
+      sum2 = _mm256_add_ps(sum2, _mm256_mul_ps(df, df));
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+24]),
+          _mm256_loadu_ps(&fin2[i+24]));
+      sum3 = _mm256_add_ps(sum3, _mm256_mul_ps(df, df));
+    }
+    // 0-3 full registers and up to 1 partial register remain, each one goes
+    // to its own accumulator
+    if(n&16) // 2 registers (8 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum0 = _mm256_add_ps(sum0, _mm256_mul_ps(df, df));
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i+8]),
+          _mm256_loadu_ps(&fin2[i+8]));
+      sum1 = _mm256_add_ps(sum1, _mm256_mul_ps(df, df));
+      i += 16;
+    }
+    if(n&8) // 1 register (4 complex elements)
+    {
+      df = _mm256_sub_ps(_mm256_loadu_ps(&fin1[i]), _mm256_loadu_ps(&fin2[i]));
+      sum2 = _mm256_add_ps(sum2, _mm256_mul_ps(df, df));
+      i += 8;
+    }
+    // handle remaining elements in partial register (note n&7 == n%8)
+    const int rem = n&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      df = _mm256_sub_ps(_mm256_maskload_ps(&fin1[i], msk),
+          _mm256_maskload_ps(&fin2[i], msk));
+      sum3 = _mm256_add_ps(sum3, _mm256_mul_ps(df, df));
+    }
+    sum0 = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
+    // horizontal sum
+    hs = _mm256_extractf128_ps(sum0, 1); // extract upper half of register
+    hs = _mm_add_ps(_mm256_castps256_ps128(sum0), hs); // [0+4, 1+5, 2+6, 3+7]
+    hs = _mm_add_ps(hs, _mm_movehl_ps(hs, hs)); // [0+4+2+6, 1+5+3+7, ...]
+    hs = _mm_add_ss(hs, _mm_movehdup_ps(hs));   // [0+1+2+3+4+5+6+7, ...]
+    out = _mm_cvtss_f32(hs); // extract the first element in the register
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void sumSqDiff(complex<float> const * const in1,
+      complex<float> const * const in2, const int len, float &out)
+  {
+    float re, im;
+    out = 0.0f;
+    for(int i=0; i<len; ++i)
+    {
+      re = in1[i].real()-in2[i].real();
+      im = in1[i].imag()-in2[i].imag();
+      out += re*re+im*im;
+    }
+    return;
+  }
+
+  // weighted sum of real buffers, real weight applied to second input
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight, float * const out)
+  {
+    if(len<=0) return;
+    const __m512 w = _mm512_set1_ps(weight);
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_loadu_ps(&in2[i]);
+      ld1 = _mm512_fmadd_ps(w, ld2, ld1); // in1 + weight*in2
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_maskz_loadu_ps(mk, &in2[i]);
+      ld1 = _mm512_fmadd_ps(w, ld2, ld1); // in1 + weight*in2
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight, float * const out)
+  {
+    if(len<=0) return;
+    const __m256 w = _mm256_set1_ps(weight);
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_fmadd_ps(w, ld2, ld1); // in1 + weight*in2
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_fmadd_ps(w, ld2, ld1); // in1 + weight*in2
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight, float * const out)
+  {
+    if(len<=0) return;
+    const __m256 w = _mm256_set1_ps(weight);
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_loadu_ps(&in2[i]);
+      ld1 = _mm256_add_ps(ld1, _mm256_mul_ps(w, ld2)); // in1 + weight*in2
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_maskload_ps(&in2[i], msk);
+      ld1 = _mm256_add_ps(ld1, _mm256_mul_ps(w, ld2)); // in1 + weight*in2
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight, float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = in1[i]+weight*in2[i];
+    return;
+  }
+  
+  // weighted sum of complex buffers, complex weight applied to second input
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: weight*in2 = [wr*Br-wi*Bi, wr*Bi+wi*Br], so in1 + wr*in2 is one
+    // FMA and the other one adds in2 with its parts swapped times
+    // [-wi, wi], the same sums in the same order as the default version
+    const __m512 wr = _mm512_set1_ps(weight.real());
+    const __m512 wi = _mm512_unpacklo_ps(_mm512_set1_ps(-weight.imag()),
+        _mm512_set1_ps(weight.imag())); // [-wi, wi, -wi, wi, ...]
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      ld1 = _mm512_fmadd_ps(wr, ld2, ld1); // [Ar+wr*Br, Ai+wr*Bi, ...]
+      ld2 = _mm512_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm512_fmadd_ps(wi, ld2, ld1); // [Ar+wr*Br-wi*Bi, ...]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = mask16(rem<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in2[i])); // B
+      ld1 = _mm512_fmadd_ps(wr, ld2, ld1); // [Ar+wr*Br, Ai+wr*Bi, ...]
+      ld2 = _mm512_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm512_fmadd_ps(wi, ld2, ld1); // [Ar+wr*Br-wi*Bi, ...]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: weight*in2 = [wr*Br-wi*Bi, wr*Bi+wi*Br], so in1 + wr*in2 is one
+    // FMA and the other one adds in2 with its parts swapped times
+    // [-wi, wi], the same sums in the same order as the default version
+    const __m256 wr = _mm256_set1_ps(weight.real());
+    const __m256 wi = _mm256_unpacklo_ps(_mm256_set1_ps(-weight.imag()),
+        _mm256_set1_ps(weight.imag())); // [-wi, wi, -wi, wi, ...]
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      ld1 = _mm256_fmadd_ps(wr, ld2, ld1); // [Ar+wr*Br, Ai+wr*Bi, ...]
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm256_fmadd_ps(wi, ld2, ld1); // [Ar+wr*Br-wi*Bi, ...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+          msk);
+      ld1 = _mm256_fmadd_ps(wr, ld2, ld1); // [Ar+wr*Br, Ai+wr*Bi, ...]
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm256_fmadd_ps(wi, ld2, ld1); // [Ar+wr*Br-wi*Bi, ...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: weight*in2 = [wr*Br-wi*Bi, wr*Bi+wi*Br], in1 + wr*in2 first and
+    // then addsub with in2 with its parts swapped times wi, the same sums in
+    // the same order as the default version
+    const __m256 wr = _mm256_set1_ps(weight.real());
+    const __m256 wi = _mm256_set1_ps(weight.imag());
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      ld1 = _mm256_add_ps(ld1, _mm256_mul_ps(wr, ld2)); // [Ar+wr*Br, ...]
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm256_addsub_ps(ld1, _mm256_mul_ps(wi, ld2)); // [...-wi*Bi, ...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+          msk);
+      ld1 = _mm256_add_ps(ld1, _mm256_mul_ps(wr, ld2)); // [Ar+wr*Br, ...]
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      ld1 = _mm256_addsub_ps(ld1, _mm256_mul_ps(wi, ld2)); // [...-wi*Bi, ...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight, complex<float> * const out)
+  {
+    float re, im;
+    for(int i=0; i<len; ++i)
+    {
+      re = in1[i].real()+weight.real()*in2[i].real()-
+          weight.imag()*in2[i].imag();
+      im = in1[i].imag()+weight.real()*in2[i].imag()+
+          weight.imag()*in2[i].real();
+      out[i].real(re);
+      out[i].imag(im);
+    }
+    return;
+  }
+
+  // weighted sum of complex buffers, real weight applied to second input
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const float weight, complex<float> * const out)
+  {
+    // use real version with 2x length (2*len rather than len<<1, a left shift
+    // of a negative len is undefined)
+    wsum(reinterpret_cast<float const * const>(in1),
+        reinterpret_cast<float const * const>(in2), 2*len, weight,
+        reinterpret_cast<float * const>(out));
+    return;
+  }
+
+  // weighted sum of real buffers, real weights applied to both inputs
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight1, const float weight2,
+      float * const out)
+  {
+    if(len<=0) return;
+    const __m512 w1 = _mm512_set1_ps(weight1);
+    const __m512 w2 = _mm512_set1_ps(weight2);
+    __m512 ld1, ld2;
+    int i = 0;
+    for(; i<len-15; i+=16) // process 16 real elements per register
+    {
+      ld1 = _mm512_loadu_ps(&in1[i]);
+      ld2 = _mm512_mul_ps(w2, _mm512_loadu_ps(&in2[i])); // weight2*in2
+      ld1 = _mm512_fmadd_ps(w1, ld1, ld2); // weight1*in1 + weight2*in2
+      _mm512_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&15 == len%16)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16(rem);
+      ld1 = _mm512_maskz_loadu_ps(mk, &in1[i]);
+      ld2 = _mm512_mul_ps(w2, _mm512_maskz_loadu_ps(mk, &in2[i]));
+      ld1 = _mm512_fmadd_ps(w1, ld1, ld2); // weight1*in1 + weight2*in2
+      _mm512_mask_storeu_ps(&out[i], mk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight1, const float weight2,
+      float * const out)
+  {
+    if(len<=0) return;
+    const __m256 w1 = _mm256_set1_ps(weight1);
+    const __m256 w2 = _mm256_set1_ps(weight2);
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_loadu_ps(&in1[i]);
+      ld2 = _mm256_mul_ps(w2, _mm256_loadu_ps(&in2[i])); // weight2*in2
+      ld1 = _mm256_fmadd_ps(w1, ld1, ld2); // weight1*in1 + weight2*in2
+      _mm256_storeu_ps(&out[i], ld1);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_maskload_ps(&in1[i], msk);
+      ld2 = _mm256_mul_ps(w2, _mm256_maskload_ps(&in2[i], msk));
+      ld1 = _mm256_fmadd_ps(w1, ld1, ld2); // weight1*in1 + weight2*in2
+      _mm256_maskstore_ps(&out[i], msk, ld1);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight1, const float weight2,
+      float * const out)
+  {
+    if(len<=0) return;
+    const __m256 w1 = _mm256_set1_ps(weight1);
+    const __m256 w2 = _mm256_set1_ps(weight2);
+    __m256 ld1, ld2;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 real elements per register
+    {
+      ld1 = _mm256_mul_ps(w1, _mm256_loadu_ps(&in1[i])); // weight1*in1
+      ld2 = _mm256_mul_ps(w2, _mm256_loadu_ps(&in2[i])); // weight2*in2
+      _mm256_storeu_ps(&out[i], _mm256_add_ps(ld1, ld2));
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem]));
+      ld1 = _mm256_mul_ps(w1, _mm256_maskload_ps(&in1[i], msk));
+      ld2 = _mm256_mul_ps(w2, _mm256_maskload_ps(&in2[i], msk));
+      _mm256_maskstore_ps(&out[i], msk, _mm256_add_ps(ld1, ld2));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void wsum(float const * const in1, float const * const in2,
+      const int len, const float weight1, const float weight2,
+      float * const out)
+  {
+    for(int i=0; i<len; ++i) out[i] = weight1*in1[i]+weight2*in2[i];
+    return;
+  }
+  
+  // weighted sum of complex buffers, complex weights applied to both inputs
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight1, const complex<float> weight2,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: each complex multiply is the real part of the weight times the
+    // input plus the input with its parts swapped times [-wi, wi], the same
+    // sums in the same order as the default version
+    const __m512 w1r = _mm512_set1_ps(weight1.real());
+    const __m512 w1i = _mm512_unpacklo_ps(_mm512_set1_ps(-weight1.imag()),
+        _mm512_set1_ps(weight1.imag())); // [-w1i, w1i, -w1i, w1i, ...]
+    const __m512 w2r = _mm512_set1_ps(weight2.real());
+    const __m512 w2i = _mm512_unpacklo_ps(_mm512_set1_ps(-weight2.imag()),
+        _mm512_set1_ps(weight2.imag())); // [-w2i, w2i, -w2i, w2i, ...]
+    __m512 ld1, ld2, acc;
+    int i = 0;
+    for(; i<len-7; i+=8) // process 8 complex elements per register
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      acc = _mm512_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm512_fmadd_ps(w1i, ld1, acc); // weight1*A
+      acc = _mm512_fmadd_ps(w2r, ld2, acc); // + w2r*B
+      ld2 = _mm512_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm512_fmadd_ps(w2i, ld2, acc); // weight1*A + weight2*B
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), acc);
+    }
+    // handle remaining elements (note len&7 == len%8)
+    const int rem = len&7;
+    if(rem)
+    {
+      // each complex is 2 floats, so double rem
+      const __mmask16 mk = mask16(rem<<1);
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in1[i])); // A
+      ld2 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(
+          &in2[i])); // B
+      acc = _mm512_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm512_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm512_fmadd_ps(w1i, ld1, acc); // weight1*A
+      acc = _mm512_fmadd_ps(w2r, ld2, acc); // + w2r*B
+      ld2 = _mm512_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm512_fmadd_ps(w2i, ld2, acc); // weight1*A + weight2*B
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, acc);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight1, const complex<float> weight2,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: each complex multiply is the real part of the weight times the
+    // input plus the input with its parts swapped times [-wi, wi], the same
+    // sums in the same order as the default version
+    const __m256 w1r = _mm256_set1_ps(weight1.real());
+    const __m256 w1i = _mm256_unpacklo_ps(_mm256_set1_ps(-weight1.imag()),
+        _mm256_set1_ps(weight1.imag())); // [-w1i, w1i, -w1i, w1i, ...]
+    const __m256 w2r = _mm256_set1_ps(weight2.real());
+    const __m256 w2i = _mm256_unpacklo_ps(_mm256_set1_ps(-weight2.imag()),
+        _mm256_set1_ps(weight2.imag())); // [-w2i, w2i, -w2i, w2i, ...]
+    __m256 ld1, ld2, acc;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      acc = _mm256_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm256_fmadd_ps(w1i, ld1, acc); // weight1*A
+      acc = _mm256_fmadd_ps(w2r, ld2, acc); // + w2r*B
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm256_fmadd_ps(w2i, ld2, acc); // weight1*A + weight2*B
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), acc);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+          msk);
+      acc = _mm256_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm256_fmadd_ps(w1i, ld1, acc); // weight1*A
+      acc = _mm256_fmadd_ps(w2r, ld2, acc); // + w2r*B
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm256_fmadd_ps(w2i, ld2, acc); // weight1*A + weight2*B
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, acc);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight1, const complex<float> weight2,
+      complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: each complex multiply is the real part of the weight times the
+    // input, then addsub with the input with its parts swapped times wi, the
+    // same sums in the same order as the default version
+    const __m256 w1r = _mm256_set1_ps(weight1.real());
+    const __m256 w1i = _mm256_set1_ps(weight1.imag());
+    const __m256 w2r = _mm256_set1_ps(weight2.real());
+    const __m256 w2i = _mm256_set1_ps(weight2.imag());
+    __m256 ld1, ld2, acc;
+    int i = 0;
+    for(; i<len-3; i+=4) // process 4 complex elements per register
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in1[i]));// A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in2[i]));// B
+      acc = _mm256_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm256_addsub_ps(acc, _mm256_mul_ps(w1i, ld1)); // weight1*A
+      acc = _mm256_add_ps(acc, _mm256_mul_ps(w2r, ld2)); // + w2r*B
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm256_addsub_ps(acc, _mm256_mul_ps(w2i, ld2)); // + weight2*B
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), acc);
+    }
+    // handle remaining elements (note len&3 == len%4)
+    const int rem = len&3;
+    if(rem)
+    {
+      // 2 floats per complex, so double rem for mask
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[rem<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in1[i]),
+          msk);
+      ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in2[i]),
+          msk);
+      acc = _mm256_mul_ps(w1r, ld1); // [w1r*Ar, w1r*Ai, ...]
+      ld1 = _mm256_shuffle_ps(ld1, ld1, 0xb1); // [Ai0,Ar0,Ai1,Ar1,...]
+      acc = _mm256_addsub_ps(acc, _mm256_mul_ps(w1i, ld1)); // weight1*A
+      acc = _mm256_add_ps(acc, _mm256_mul_ps(w2r, ld2)); // + w2r*B
+      ld2 = _mm256_shuffle_ps(ld2, ld2, 0xb1); // [Bi0,Br0,Bi1,Br1,...]
+      acc = _mm256_addsub_ps(acc, _mm256_mul_ps(w2i, ld2)); // + weight2*B
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, acc);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const complex<float> weight1, const complex<float> weight2,
+      complex<float> * const out)
+  {
+    float re, im;
+    for(int i=0; i<len; ++i)
+    {
+      re = weight1.real()*in1[i].real()-weight1.imag()*in1[i].imag()+
+          weight2.real()*in2[i].real()-weight2.imag()*in2[i].imag();
+      im = weight1.real()*in1[i].imag()+weight1.imag()*in1[i].real()+
+          weight2.real()*in2[i].imag()+weight2.imag()*in2[i].real();
+      out[i].real(re);
+      out[i].imag(im);
+    }
+    return;
+  }
+  
+  // weighted sum of complex buffers, real weights applied to both inputs
+  inline void wsum(complex<float> const * const in1,
+      complex<float> const * const in2, const int len,
+      const float weight1, const float weight2,
+      complex<float> * const out)
+  {
+    // use real version with 2x length (2*len rather than len<<1, a left shift
+    // of a negative len is undefined)
+    wsum(reinterpret_cast<float const * const>(in1),
+        reinterpret_cast<float const * const>(in2), 2*len, weight1, weight2,
+        reinterpret_cast<float * const>(out));
+    return;
+  }
+
   //============================================================//
   // Unit/Coordinate System Conversion Function Implementations //
   //============================================================//
@@ -28607,6 +29867,184 @@ namespace EVM
     }
     return;
   }
+  
+  // polToCart with separate inputs for magnitude and phase, phase in cycles
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void polToCart(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffers to the start, in case out shares a buffer with mag or phase
+    // (the real input in the front of the complex output): a block of
+    // outputs only overwrites the inputs of later blocks, or its own after
+    // it has read them.  The blocks are counted from element 0, so the
+    // last, partial, block comes first
+    __m512 m, ph, sn, cs;
+    // indexes that interleave the real and imaginary parts of 16 elements
+    // into the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __mmask16 mk = mask16(n);
+      m = _mm512_maskz_loadu_ps(mk, &mag[i]);
+      ph = _mm512_maskz_loadu_ps(mk, &phase[i]);
+      TRIG::sincosCyc512(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      m = _mm512_loadu_ps(&mag[i]);
+      ph = _mm512_loadu_ps(&phase[i]);
+      TRIG::sincosCyc512(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      // [x0,y0,x1,y1,...,x7,y7] and [x8,y8,...,x15,y15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void polToCart(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the same as the AVX version, but evm_trig.h's sin/cos uses FMA
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      TRIG::sincosCycAvx2(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      TRIG::sincosCycAvx2(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void polToCart(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      TRIG::sincosCycAvx(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      TRIG::sincosCycAvx(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default
+  __attribute__((__target__("default")))
+  inline void polToCart(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    float tmpx, tmpy, tmpmag;
+    // note: whole cycles are removed from the phase first, so large phases
+    // keep their accuracy, iterate backwards in case output is the same as
+    // one of the inputs
+    for(int i=len-1; i>=0; --i)
+    {
+      sincosf(M_TWO_PI*(phase[i] - rintf(phase[i])), &tmpy, &tmpx);
+      tmpmag = mag[i];
+      out[i].real(tmpmag*tmpx);
+      out[i].imag(tmpmag*tmpy);
+    }
+    return;
+  }
 
   // Polar to cartesian conversion with phase in radians
   #if !defined(DISABLE_AVX512) // AVX512 
@@ -28801,6 +30239,581 @@ namespace EVM
       sincosf(in[i].imag(), &tmpy, &tmpx);
       out[i].real(mag*tmpx);
       out[i].imag(mag*tmpy);
+    }
+    return;
+  }
+
+  // polToCart with separate inputs for magnitude and phase, phase in radians
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void polToCartRad(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffers to the start, in case out shares a buffer with mag or phase
+    // (the real input in the front of the complex output): a block of
+    // outputs only overwrites the inputs of later blocks, or its own after
+    // it has read them.  The blocks are counted from element 0, so the
+    // last, partial, block comes first
+    __m512 m, ph, sn, cs;
+    // indexes that interleave the real and imaginary parts of 16 elements
+    // into the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __mmask16 mk = mask16(n);
+      m = _mm512_maskz_loadu_ps(mk, &mag[i]);
+      ph = _mm512_maskz_loadu_ps(mk, &phase[i]);
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      m = _mm512_loadu_ps(&mag[i]);
+      ph = _mm512_loadu_ps(&phase[i]);
+      #if defined(EVM_SVML)
+      sn = _mm512_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRad512(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      // [x0,y0,x1,y1,...,x7,y7] and [x8,y8,...,x15,y15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void polToCartRad(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the same as the AVX version, but with SVML's AVX2 sincos, which
+    // is faster than its AVX one, and evm_trig.h's uses FMA
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      #if defined(EVM_SVML)
+      sn = _mm256_sincos_ps(&cs, ph); // sin(ph), cos(ph) in cs
+      #else
+      TRIG::sincosRadAvx2(ph, sn, cs); // sin(ph), cos(ph) in cs
+      #endif
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void polToCartRad(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: always evm_trig.h's sincosRadAvx, even with SVML: SVML's AVX
+    // sincos is slower (but more accurate, see the file header)
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      TRIG::sincosRadAvx(ph, sn, cs); // sin(ph), cos(ph) in cs
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void polToCartRad(float const * const mag, float const * const phase,
+      const int len, complex<float> * const out)
+  {
+    float tmpx, tmpy, tmpmag;
+    // note: iterate backwards in case output is the same as one of the
+    // inputs
+    for(int i=len-1; i>=0; --i)
+    {
+      sincosf(phase[i], &tmpy, &tmpx);
+      tmpmag = mag[i];
+      out[i].real(tmpmag*tmpx);
+      out[i].imag(tmpmag*tmpy);
+    }
+    return;
+  }
+
+  // polToCart with phase scaled, phase in cycles
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void polToCarts(complex<float> const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    const __m512 sc = _mm512_set1_ps(scale);
+    __m512 ld1, ld2, mag, ph, sn, cs;
+    int i = 0;
+    // note: the magnitudes and phases of 2 registers are separated so that
+    // each sincos call computes 16 phases (m = magnitude, p = phase)
+    for(; i<len-15; i+=16) // process 16 complex elements (2 registers)
+    {
+      ld1 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm512_loadu_ps(reinterpret_cast<float const *>(&in[i+8])); // B
+      mag = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm512_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm512_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCyc512(ph, sn, cs);          // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm512_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm512_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm512_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]), ld2);
+    }
+    // handle remaining elements (note len&15 == len%16), the sincos call takes
+    // as long for 1 register as for 2, so the remainder is always processed
+    // as 2 registers (the second is zero if rem <= 8)
+    const int rem = len&15;
+    if(rem)
+    {
+      const __mmask16 mk = mask16((rem>8? 8 : rem)<<1); // 2 floats per complex
+      ld1 = _mm512_maskz_loadu_ps(mk, reinterpret_cast<float const *>(&in[i]));
+      ld2 = _mm512_setzero_ps();
+      if(rem>8)
+        ld2 = _mm512_maskz_loadu_ps(mask16((rem-8)<<1),
+            reinterpret_cast<float const *>(&in[i+8]));
+      mag = _mm512_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm512_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm512_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCyc512(ph, sn, cs);          // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm512_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm512_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm512_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]), mk, ld1);
+      if(rem>8)
+        _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+            mask16((rem-8)<<1), ld2);
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void polToCarts(complex<float> const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the same as the AVX version, but evm_trig.h's sin/cos uses FMA
+    const __m256 sc = _mm256_set1_ps(scale);
+    __m256 ld1, ld2, mag, ph, sn, cs;
+    int i = 0;
+    // note: the magnitudes and phases of 2 registers are separated so that
+    // each sincos call computes 8 phases (m = magnitude, p = phase)
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm256_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCycAvx2(ph, sn, cs);         // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm256_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8), the sincos call takes
+    // as long for 1 register as for 2, so the remainder is always processed
+    // as 2 registers (the second is zero if rem <= 4)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk accounts for 2 reals per element for the complex buffers
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem>4? 4 : rem)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      if(rem>4)
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]),
+            _mm256_load_si256(reinterpret_cast<__m256i const *>(
+            masks[(rem-4)<<1])));
+      mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm256_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCycAvx2(ph, sn, cs);         // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm256_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
+      if(rem>4)
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_load_si256(reinterpret_cast<__m256i const *>(
+            masks[(rem-4)<<1])), ld2);
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void polToCarts(complex<float> const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    const __m256 sc = _mm256_set1_ps(scale);
+    __m256 ld1, ld2, mag, ph, sn, cs;
+    int i = 0;
+    // note: the magnitudes and phases of 2 registers are separated so that
+    // each sincos call computes 8 phases (m = magnitude, p = phase)
+    for(; i<len-7; i+=8) // process 8 complex elements (2 registers)
+    {
+      ld1 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i])); // A
+      ld2 = _mm256_loadu_ps(reinterpret_cast<float const *>(&in[i+4])); // B
+      mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm256_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCycAvx(ph, sn, cs);          // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm256_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]), ld1);
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]), ld2);
+    }
+    // handle remaining elements (note len&7 == len%8), the sincos call takes
+    // as long for 1 register as for 2, so the remainder is always processed
+    // as 2 registers (the second is zero if rem <= 4)
+    const int rem = len&7;
+    if(rem)
+    {
+      // note msk accounts for 2 reals per element for the complex buffers
+      const __m256i msk = _mm256_load_si256(
+          reinterpret_cast<__m256i const *>(masks[(rem>4? 4 : rem)<<1]));
+      ld1 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i]), msk);
+      ld2 = _mm256_setzero_ps();
+      if(rem>4)
+        ld2 = _mm256_maskload_ps(reinterpret_cast<float const *>(&in[i+4]),
+            _mm256_load_si256(reinterpret_cast<__m256i const *>(
+            masks[(rem-4)<<1])));
+      mag = _mm256_shuffle_ps(ld1, ld2, 0x88); // [Am0,Am1,Bm0,Bm1,...]
+      ph = _mm256_shuffle_ps(ld1, ld2, 0xdd);  // [Ap0,Ap1,Bp0,Bp1,...]
+      ph = _mm256_mul_ps(ph, sc);              // phase times scale
+      TRIG::sincosCycAvx(ph, sn, cs);          // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(mag, cs);             // [Ax0,Ax1,Bx0,Bx1,...]
+      sn = _mm256_mul_ps(mag, sn);             // [Ay0,Ay1,By0,By1,...]
+      ld1 = _mm256_unpacklo_ps(cs, sn);        // [Ax0,Ay0,Ax1,Ay1,...]
+      ld2 = _mm256_unpackhi_ps(cs, sn);        // [Bx0,By0,Bx1,By1,...]
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), msk, ld1);
+      if(rem>4)
+        _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]),
+            _mm256_load_si256(reinterpret_cast<__m256i const *>(
+            masks[(rem-4)<<1])), ld2);
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void polToCarts(complex<float> const * const in, const int len,
+      const float scale, complex<float> * const out)
+  {
+    float tmpx, tmpy, mag, ph;
+    // note: the phase is scaled first and then whole cycles are removed, so
+    // large phases keep their accuracy
+    for(int i=0; i<len; ++i)
+    {
+      mag = in[i].real();
+      ph = scale*in[i].imag();
+      sincosf(M_TWO_PI*(ph - rintf(ph)), &tmpy, &tmpx);
+      out[i].real(mag*tmpx);
+      out[i].imag(mag*tmpy);
+    }
+    return;
+  }
+
+  // polToCarts with separate inputs for magnitude and phase, phase in cycles
+  #if !defined(DISABLE_AVX512) // AVX512 
+  __attribute__((__target__("avx512f")))
+  inline void polToCarts(float const * const mag, float const * const phase,
+      const int len, const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the default version, the elements run from the end of the
+    // buffers to the start, in case out shares a buffer with mag or phase
+    // (the real input in the front of the complex output): a block of
+    // outputs only overwrites the inputs of later blocks, or its own after
+    // it has read them.  The blocks are counted from element 0, so the
+    // last, partial, block comes first
+    const __m512 sc = _mm512_set1_ps(scale);
+    __m512 m, ph, sn, cs;
+    // indexes that interleave the real and imaginary parts of 16 elements
+    // into the registers of the first 8 and the next 8 complex outputs
+    const __m512i ilo = _mm512_setr_epi32(0, 16, 1, 17, 2, 18, 3, 19, 4, 20,
+        5, 21, 6, 22, 7, 23);
+    const __m512i ihi = _mm512_setr_epi32(8, 24, 9, 25, 10, 26, 11, 27, 12,
+        28, 13, 29, 14, 30, 15, 31);
+    int i = len&~15; // start of the partial block (len if there is none)
+    // the partial block, 1-15 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __mmask16 mk = mask16(n);
+      m = _mm512_maskz_loadu_ps(mk, &mag[i]);
+      ph = _mm512_maskz_loadu_ps(mk, &phase[i]);
+      ph = _mm512_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCyc512(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          mask16(std::max(n-8, 0)<<1), _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_mask_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          mask16(std::min(n, 8)<<1), _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    for(i-=16; i>=0; i-=16) // process 16 elements
+    {
+      m = _mm512_loadu_ps(&mag[i]);
+      ph = _mm512_loadu_ps(&phase[i]);
+      ph = _mm512_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCyc512(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm512_mul_ps(m, cs); // x = mag*cos
+      sn = _mm512_mul_ps(m, sn); // y = mag*sin
+      // [x0,y0,x1,y1,...,x7,y7] and [x8,y8,...,x15,y15]
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i+8]),
+          _mm512_permutex2var_ps(cs, ihi, sn));
+      _mm512_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm512_permutex2var_ps(cs, ilo, sn));
+    }
+    return;
+  }
+  #endif // end AVX512 
+  #if !defined(DISABLE_AVX2) // AVX2 
+  __attribute__((__target__("avx2,fma")))
+  inline void polToCarts(float const * const mag, float const * const phase,
+      const int len, const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // note: the same as the AVX version, but evm_trig.h's sin/cos uses FMA
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    const __m256 sc = _mm256_set1_ps(scale);
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      ph = _mm256_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCycAvx2(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      ph = _mm256_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCycAvx2(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX2 
+  #if !defined(DISABLE_AVX) // AVX 
+  __attribute__((__target__("avx")))
+  inline void polToCarts(float const * const mag, float const * const phase,
+      const int len, const float scale, complex<float> * const out)
+  {
+    if(len<=0) return;
+    // as in the AVX-512 version.  unpacklo and unpackhi interleave the
+    // real and imaginary parts into elements 0,1|4,5 and 2,3|6,7, and
+    // permute2f128 regroups their halves
+    const __m256 sc = _mm256_set1_ps(scale);
+    __m256 m, ph, sn, cs, lo, hi;
+    int i = len&~7; // start of the partial block (len if there is none)
+    // the partial block, 1-7 elements, with masks: the input mask selects
+    // the elements it has and the output masks twice as many floats (2 per
+    // complex output), and a zero mask reads and writes nothing
+    if(i<len)
+    {
+      const int n = len-i;
+      const __m256i mk = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[n]));
+      m = _mm256_maskload_ps(&mag[i], mk);
+      ph = _mm256_maskload_ps(&phase[i], mk);
+      ph = _mm256_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCycAvx(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      const __m256i mk1 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::min(n, 4)<<1]));
+      const __m256i mk2 = _mm256_load_si256(reinterpret_cast<__m256i const *>(
+          masks[std::max(n-4, 0)<<1]));
+      lo = _mm256_unpacklo_ps(cs, sn);
+      hi = _mm256_unpackhi_ps(cs, sn);
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i+4]), mk2,
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_maskstore_ps(reinterpret_cast<float *>(&out[i]), mk1,
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    for(i-=8; i>=0; i-=8) // process 8 elements
+    {
+      m = _mm256_loadu_ps(&mag[i]);
+      ph = _mm256_loadu_ps(&phase[i]);
+      ph = _mm256_mul_ps(ph, sc); // phase times scale, in cycles
+      TRIG::sincosCycAvx(ph, sn, cs); // sin(2*pi*ph), cos(2*pi*ph)
+      cs = _mm256_mul_ps(m, cs); // x = mag*cos
+      sn = _mm256_mul_ps(m, sn); // y = mag*sin
+      lo = _mm256_unpacklo_ps(cs, sn); // [x0,y0,x1,y1|x4,y4,x5,y5]
+      hi = _mm256_unpackhi_ps(cs, sn); // [x2,y2,x3,y3|x6,y6,x7,y7]
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i+4]),
+          _mm256_permute2f128_ps(lo, hi, 0x31));
+      _mm256_storeu_ps(reinterpret_cast<float *>(&out[i]),
+          _mm256_permute2f128_ps(lo, hi, 0x20));
+    }
+    return;
+  }
+  #endif // end AVX 
+  // default 
+  __attribute__((__target__("default")))
+  inline void polToCarts(float const * const mag, float const * const phase,
+      const int len, const float scale, complex<float> * const out)
+  {
+    float tmpx, tmpy, tmpmag, ph;
+    // note: the phase is scaled first and then whole cycles are removed, so
+    // large phases keep their accuracy, iterate backwards in case output is
+    // the same as one of the inputs
+    for(int i=len-1; i>=0; --i)
+    {
+      ph = scale*phase[i];
+      sincosf(M_TWO_PI*(ph - rintf(ph)), &tmpy, &tmpx);
+      tmpmag = mag[i];
+      out[i].real(tmpmag*tmpx);
+      out[i].imag(tmpmag*tmpy);
     }
     return;
   }

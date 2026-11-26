@@ -1574,6 +1574,103 @@ static void checkPolarSpecial(const char* name, const float* const re,
 
 
 //==============================================================================
+// Test driver for the polar to cartesian conversions with the magnitude and
+// the phase in separate real buffers (complex output)
+//
+//   runEvm(mag, ph, len, out)  calls the EVM function under test
+//   baseline(k)                returns the expected value of element k
+//
+// Mode 0 uses separate buffers; modes 1 and 2 put the complex output on top
+// of mag or of the phases (the real input in the front of the complex
+// output, which the header allows).  The error of each element is measured
+// against |mag[k]|, since one part can be near zero, at every length, and
+// nothing past out[len-1] may be written.  With flush to zero on, a result
+// below FLT_MIN may come out as 0.
+//==============================================================================
+template<class FEVM, class FREF>
+static void checkPolarSplit(const char* name, const float* const magBuf,
+                            const float* const phBuf, FEVM runEvm,
+                            FREF baseline)
+{
+  ++gTests;
+  long   compared = 0;
+  int    nbad = 0, nshown = 0, nstray = 0;
+  double worstRel = 0.0;
+  const bool ftz = (_mm_getcsr() & _MM_FLUSH_ZERO_MASK) == _MM_FLUSH_ZERO_ON;
+  std::vector<complex<float> > out(MAXLEN + GUARD);
+  float* const of = reinterpret_cast<float*>(out.data());
+  for(int mode=0; mode<3; ++mode)
+  {
+    const char* modeName = (mode==0) ? "" :
+                           (mode==1) ? " [out on mag]" : " [out on phase]";
+    for(size_t li=0; li<gLengths.size(); ++li)
+    {
+      const int len   = gLengths[li];
+      const int valid = (len > 0) ? len : 0;
+      for(int k=0; k<MAXLEN+GUARD; ++k) out[k] = sentinel<complex<float> >();
+      if(mode == 1)
+      {
+        for(int k=0; k<valid; ++k) of[k] = magBuf[k];
+        runEvm(of, phBuf, len, out.data());
+      }
+      else if(mode == 2)
+      {
+        for(int k=0; k<valid; ++k) of[k] = phBuf[k];
+        runEvm(magBuf, of, len, out.data());
+      }
+      else runEvm(magBuf, phBuf, len, out.data());
+      for(int k=0; k<valid; ++k)
+      {
+        const cdbl   got   = toCdbl(out[k]);
+        const cdbl   want  = baseline(k);
+        const double adiff = std::abs(got - want);
+        const double size  = std::max(
+            std::fabs(static_cast<double>(magBuf[k])),
+            static_cast<double>(std::numeric_limits<float>::min()));
+        const double rdiff = adiff/size;
+        ++compared;
+        if(rdiff <= TOL_TRIG)
+        {
+          if(rdiff > worstRel) worstRel = rdiff;
+          continue;
+        }
+        if(ftz && got == cdbl(0.0, 0.0) &&
+           std::abs(want) < std::numeric_limits<float>::min()) continue;
+        ++nbad;
+        if(nshown < MAX_REPORT)
+        {
+          ++nshown;
+          printf("      len=%-5d element %-5d evm=%s baseline=%s "
+                 "reldiff=%.6g%s\n", len, k, format(got, true).c_str(),
+                 format(want, true).c_str(), rdiff, modeName);
+        }
+      }
+      for(int k=valid; k<MAXLEN+GUARD; ++k)
+      {
+        if(isSentinel(out[k])) continue;
+        ++nstray;
+        if(nshown < MAX_REPORT)
+        {
+          ++nshown;
+          printf("      len=%-5d element %-5d WROTE PAST END evm=%s%s\n", len,
+                 k, format(toCdbl(out[k]), true).c_str(), modeName);
+        }
+      }
+    }
+  }
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+  printf("  %-34s %s  [%ld values, tol %.0e, worst rel %.3e", name,
+         pass ? "PASS" : "FAIL", compared, TOL_TRIG, worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
+}
+
+//==============================================================================
 // Special values for the inversion functions
 //
 //   runEvm(in, len, out, useEps, scale)  calls the function under test, with
@@ -2511,6 +2608,162 @@ static void checkFmmod(const char* name, const std::vector<float>& src,
   printf("]\n");
   if(nbad > nshown)
     printf("      ... %d further problems not shown\n", nbad - nshown);
+}
+
+//==============================================================================
+// Summation test driver (sum, sumSqDiff)
+//
+//   runEvm(a, b, len, res)  calls the EVM sum under test and puts its result
+//                           in res[0]; res[1] is a guard that must be left
+//                           untouched
+//   term(x, y)              the term of an element in double, from a[k] and
+//                           b[k] (a[k] for sum, |a[k]-b[k]|^2 for sumSqDiff)
+//   perElem                 float terms each component of the result adds per
+//                           element (2 for sumSqDiff, the squares of both
+//                           parts of the difference)
+//   extra                   rounding errors of a term before it is added, in
+//                           units of 2^-24 (sumSqDiff: 2 from the difference,
+//                           which the square doubles, and 1 from the square
+//                           where the default version rounds it)
+//   special(pass, want)     a value for a[p] that makes the result NaN or
+//                           infinite, and in want the result it gives (its
+//                           finite parts are not checked)
+//
+// As in checkDot(), the error of each component of the result is measured
+// against the sum of the magnitudes of its terms, within
+// (perElem*len + 1 + extra)*2^-24, and the inputs are copied into NaN-filled
+// buffers, in2 one element off in1's alignment, so a read past the end shows
+// up as a NaN result.  Negative and zero lengths must give exactly 0.  At
+// lengths 1 to 40 each of the two special values goes through every position
+// in turn, and the result must be the NaN or infinity it gives (bit tests),
+// so every element, in every lane and in the partial last register, has to
+// reach the sum.
+//==============================================================================
+template<class TR, class TA, class TB, class FEVM, class FTERM, class FSPEC>
+static void checkSum(const char* name, const TA* const aBuf,
+                     const TB* const bBuf, FEVM runEvm, FTERM term,
+                     const int perElem, const int extra, FSPEC special)
+{
+  ++gTests;
+  const bool   cplx = IsComplex<TR>::value;
+  const double u    = std::ldexp(1.0, -24);
+  std::vector<TA> a(MAXLEN + GUARD);
+  std::vector<TB> b(MAXLEN + GUARD);
+
+  long   compared = 0;
+  int    nbad = 0, nshown = 0, nstray = 0;
+  double worstRel = 0.0;
+
+  auto fill = [&](const int valid)
+  {
+    for(int k=0; k<MAXLEN+GUARD; ++k)
+    {
+      a[k] = sentinel<TA>();
+      b[k] = sentinel<TB>();
+    }
+    for(int k=0; k<valid; ++k) { a[k] = aBuf[k]; b[k+1] = bBuf[k]; }
+  };
+  auto stray = [&](const TR& guard, const int len)
+  {
+    if(isSentinel(guard)) return;
+    ++nstray;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d WROTE PAST THE RESULT evm=%s\n", len,
+             format(toCdbl(guard), cplx).c_str());
+    }
+  };
+
+  for(size_t li=0; li<gLengths.size(); ++li)
+  {
+    const int len   = gLengths[li];
+    const int valid = (len > 0) ? len : 0;
+    fill(valid);
+    TR res[2] = {sentinel<TR>(), sentinel<TR>()};
+    runEvm(a.data(), b.data()+1, len, res);
+    const cdbl got = toCdbl(res[0]);
+    stray(res[1], len);
+
+    // baseline, and the magnitude sums that scale each component's error
+    cdbl   want  = 0.0;
+    double absRe = 0.0, absIm = 0.0;
+    for(int k=0; k<valid; ++k)
+    {
+      const cdbl t = term(aBuf[k], bBuf[k]);
+      want  += t;
+      absRe += std::fabs(t.real());
+      absIm += std::fabs(t.imag());
+    }
+    const double tol   = (perElem*valid + 1 + extra)*u;
+    const double dRe   = std::fabs(got.real() - want.real());
+    const double dIm   = std::fabs(got.imag() - want.imag());
+    const double rdiff = std::max((absRe > 0.0) ? dRe/absRe : dRe,
+                                  (absIm > 0.0) ? dIm/absIm : dIm);
+    ++compared;
+
+    // --- value (NaN fails both tests) ---
+    if((valid > 0) ? (rdiff <= tol) : (got == cdbl(0.0, 0.0)))
+    {
+      if(rdiff > worstRel) worstRel = rdiff;
+      continue;
+    }
+    ++nbad;
+    if(nshown < MAX_REPORT)
+    {
+      ++nshown;
+      printf("      len=%-5d evm=%s baseline=%s reldiff=%.6g "
+             "(of the sum of |terms|, tol %.3g)\n", len,
+             format(got, cplx).c_str(), format(want, cplx).c_str(), rdiff,
+             tol);
+    }
+  }
+
+  // --- special values at every position ---
+  // a part of want that is NaN or infinite must match exactly, compared as
+  // floats with bit tests
+  auto specOk = [](const float g, const double w)
+  {
+    const float wf = static_cast<float>(w);
+    if(bitsNan(wf)) return bitsNan(g);
+    if(bitsInf(wf)) return bitsInf(g) && bitsNeg(g) == bitsNeg(wf);
+    return true;
+  };
+  for(int len=1; len<=40; ++len)
+    for(int pass=0; pass<2; ++pass)
+      for(int pos=0; pos<len; ++pos)
+      {
+        fill(len);
+        cdbl want;
+        a[pos] = special(pass, want);
+        TR res[2] = {sentinel<TR>(), sentinel<TR>()};
+        runEvm(a.data(), b.data()+1, len, res);
+        stray(res[1], len);
+        const cdbl got = toCdbl(res[0]);
+        ++compared;
+        if(specOk(static_cast<float>(got.real()), want.real()) &&
+           specOk(static_cast<float>(got.imag()), want.imag())) continue;
+        ++nbad;
+        if(nshown < MAX_REPORT)
+        {
+          ++nshown;
+          printf("      len=%-5d special value at %-3d evm=%s want=%s\n", len,
+                 pos, format(got, cplx).c_str(), format(want, cplx).c_str());
+        }
+      }
+
+  const bool pass = (nbad == 0 && nstray == 0);
+  if(!pass) ++gFailed;
+
+  printf("  %-34s %s  [%ld values, tol (%slen+%d)*2^-24, worst rel %.3e",
+         name, pass ? "PASS" : "FAIL", compared, (perElem == 2) ? "2*" : "",
+         1 + extra, worstRel);
+  if(nbad)   printf(", %d wrong", nbad);
+  if(nstray) printf(", %d past end", nstray);
+  printf("]\n");
+  if(nbad + nstray > nshown)
+    printf("      ... %d further problems not shown\n",
+           nbad + nstray - nshown);
 }
 
 //==============================================================================
@@ -3922,6 +4175,106 @@ int main(int argc, char** argv)
              "nmag ... nmagnr special");
   }
 
+  //--- sum, sumSqDiff : sums of a buffer ------------------------------------
+  // sum(float) and sum(complex) add the elements, sumSqDiff |in1-in2|^2
+  printf("\nsum / sumSqDiff\n");
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    checkSum<float>("sum(float)", Af, Bf,
+      [](const float* a, const float*, int n, float* r)
+        { EVM::sum(a, n, r[0]); },
+      [](const float x, const float){ return toCdbl(x); }, 1, 0,
+      [=](const int pass, cdbl& want)
+        {
+          want = (pass == 0) ? cdbl(nan, 0.0) : cdbl(-inf, 0.0);
+          return (pass == 0) ? nan : -inf;
+        });
+    checkSum<complex<float> >("sum(complex)", Ac, Bc,
+      [](const complex<float>* a, const complex<float>*, int n,
+         complex<float>* r) { EVM::sum(a, n, r[0]); },
+      [](const complex<float> x, const complex<float>){ return toCdbl(x); },
+      1, 0,
+      [=](const int pass, cdbl& want)
+        {
+          want = (pass == 0) ? cdbl(nan, inf) : cdbl(-inf, nan);
+          return (pass == 0) ? complex<float>(nan, inf) :
+                               complex<float>(-inf, nan);
+        });
+    checkSum<float>("sumSqDiff(complex,complex)", Ac, Bc,
+      [](const complex<float>* a, const complex<float>* b, int n, float* r)
+        { EVM::sumSqDiff(a, b, n, r[0]); },
+      [](const complex<float> x, const complex<float> y)
+        { return cdbl(std::norm(toCdbl(x) - toCdbl(y))); }, 2, 3,
+      [=](const int pass, cdbl& want)
+        {
+          want = (pass == 0) ? cdbl(nan, 0.0) : cdbl(inf, 0.0);
+          return (pass == 0) ? complex<float>(nan, 0.5f) :
+                               complex<float>(1.0f, -inf);
+        });
+  }
+
+  //--- wsum : out = in1 + w*in2 and out = w1*in1 + w2*in2 -------------------
+  // the first weights are gSf and gSc, the second ones W2F and W2C.  The
+  // error is measured against |in1| + |w*in2| (|w1*in1| + |w2*in2|), since
+  // the terms can cancel, as for multSum.  The complex overloads with real
+  // weights run the real versions on twice the length
+  printf("\nwsum\n");
+  {
+    static const float W2F = -0.73f;
+    static const complex<float> W2C(0.37f, -1.1f);
+    check<float, float, float>("wsum(float,float,w)", TOL_EXACT, Af, Bf,
+      [](const float* a, const float* b, int n, float* o)
+        { EVM::wsum(a, b, n, gSf, o); },
+      [](int k){ return toCdbl(gAf[k]) +
+                        static_cast<double>(gSf)*toCdbl(gBf[k]); },
+      [](int k){ return std::abs(toCdbl(gAf[k])) +
+                        std::abs(static_cast<double>(gSf)*toCdbl(gBf[k])); });
+
+    check<complex<float>, complex<float>, complex<float> >(
+      "wsum(complex,complex,w)", TOL_EXACT, Ac, Bc,
+      [](const complex<float>* a, const complex<float>* b, int n,
+         complex<float>* o) { EVM::wsum(a, b, n, gSf, o); },
+      [](int k){ return toCdbl(gAc[k]) +
+                        static_cast<double>(gSf)*toCdbl(gBc[k]); },
+      [](int k){ return std::abs(toCdbl(gAc[k])) +
+                        std::abs(static_cast<double>(gSf)*toCdbl(gBc[k])); });
+
+    check<complex<float>, complex<float>, complex<float> >(
+      "wsum(complex,complex,cw)", TOL_EXACT, Ac, Bc,
+      [](const complex<float>* a, const complex<float>* b, int n,
+         complex<float>* o) { EVM::wsum(a, b, n, gSc, o); },
+      [](int k){ return toCdbl(gAc[k]) + toCdbl(gSc)*toCdbl(gBc[k]); },
+      [](int k){ return std::abs(toCdbl(gAc[k])) +
+                        std::abs(toCdbl(gSc)*toCdbl(gBc[k])); });
+
+    check<float, float, float>("wsum(float,float,w1,w2)", TOL_EXACT, Af, Bf,
+      [](const float* a, const float* b, int n, float* o)
+        { EVM::wsum(a, b, n, gSf, W2F, o); },
+      [](int k){ return static_cast<double>(gSf)*toCdbl(gAf[k]) +
+                        static_cast<double>(W2F)*toCdbl(gBf[k]); },
+      [](int k){ return std::abs(static_cast<double>(gSf)*toCdbl(gAf[k])) +
+                        std::abs(static_cast<double>(W2F)*toCdbl(gBf[k])); });
+
+    check<complex<float>, complex<float>, complex<float> >(
+      "wsum(complex,complex,w1,w2)", TOL_EXACT, Ac, Bc,
+      [](const complex<float>* a, const complex<float>* b, int n,
+         complex<float>* o) { EVM::wsum(a, b, n, gSf, W2F, o); },
+      [](int k){ return static_cast<double>(gSf)*toCdbl(gAc[k]) +
+                        static_cast<double>(W2F)*toCdbl(gBc[k]); },
+      [](int k){ return std::abs(static_cast<double>(gSf)*toCdbl(gAc[k])) +
+                        std::abs(static_cast<double>(W2F)*toCdbl(gBc[k])); });
+
+    check<complex<float>, complex<float>, complex<float> >(
+      "wsum(complex,complex,cw1,cw2)", TOL_EXACT, Ac, Bc,
+      [](const complex<float>* a, const complex<float>* b, int n,
+         complex<float>* o) { EVM::wsum(a, b, n, gSc, W2C, o); },
+      [](int k){ return toCdbl(gSc)*toCdbl(gAc[k]) +
+                        toCdbl(W2C)*toCdbl(gBc[k]); },
+      [](int k){ return std::abs(toCdbl(gSc)*toCdbl(gAc[k])) +
+                        std::abs(toCdbl(W2C)*toCdbl(gBc[k])); });
+  }
+
   //--- cnvrtInt*ToFloat : out = static_cast<float>(in) ----------------------
   // the conversions must give exactly the float the cast gives (int8/int16
   // are exact, int32 rounds to nearest); "in place" goes through the void*
@@ -4019,6 +4372,65 @@ int main(int argc, char** argv)
     [](int k){ return polarRef(gLr[k], 1.0); },
     [](int k){ return std::fabs(static_cast<double>(gLr[k].real())); });
 
+  // polToCarts: the phases (cycles) times the scale, rounded to float as the
+  // kernels round them (volatile, so the product is not kept in double),
+  // then whole cycles removed exactly
+  auto scaledRef = [](const complex<float> v, const float sc)
+  {
+    volatile float ph = sc*v.imag();
+    return polarRefCyc(complex<float>(v.real(), ph));
+  };
+  check<complex<float>, float, complex<float> >("polToCarts(complex)",
+    TOL_TRIG, Ac, nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCarts(a, n, 0.37f, o); },
+    [&](int k){ return scaledRef(gAc[k], 0.37f); },
+    [](int k){ return std::fabs(static_cast<double>(gAc[k].real())); });
+  check<complex<float>, float, complex<float> >("polToCarts(complex) large",
+    TOL_TRIG, gLc.data(), nullF,
+    [](const complex<float>* a, const float*, int n, complex<float>* o)
+      { EVM::polToCarts(a, n, -2.5f, o); },
+    [&](int k){ return scaledRef(gLc[k], -2.5f); },
+    [](int k){ return std::fabs(static_cast<double>(gLc[k].real())); });
+
+  // the overloads with the magnitudes and phases in separate buffers (gAc's,
+  // and gLc's and gLr's large phases, whose magnitudes are gAc's)
+  {
+    std::vector<float> am(MAXLEN), ap(MAXLEN), lc(MAXLEN), lr(MAXLEN);
+    for(int i=0; i<MAXLEN; ++i)
+    {
+      am[i] = gAc[i].real();
+      ap[i] = gAc[i].imag();
+      lc[i] = gLc[i].imag();
+      lr[i] = gLr[i].imag();
+    }
+    checkPolarSplit("polToCart(mag, phase)", am.data(), ap.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCart(m, ph, n, o); },
+      [](int k){ return polarRef(gAc[k], 2.0*M_PI); });
+    checkPolarSplit("polToCart(mag, phase) large phase", am.data(),
+      lc.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCart(m, ph, n, o); },
+      [](int k){ return polarRefCyc(gLc[k]); });
+    checkPolarSplit("polToCartRad(mag, phase)", am.data(), ap.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCartRad(m, ph, n, o); },
+      [](int k){ return polarRef(gAc[k], 1.0); });
+    checkPolarSplit("polToCartRad(mag, phase) large x", am.data(), lr.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCartRad(m, ph, n, o); },
+      [](int k){ return polarRef(gLr[k], 1.0); });
+    checkPolarSplit("polToCarts(mag, phase)", am.data(), ap.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCarts(m, ph, n, 0.37f, o); },
+      [&](int k){ return scaledRef(gAc[k], 0.37f); });
+    checkPolarSplit("polToCarts(mag, phase) large", am.data(), lc.data(),
+      [](const float* m, const float* ph, int n, complex<float>* o)
+        { EVM::polToCarts(m, ph, n, -2.5f, o); },
+      [&](int k){ return scaledRef(gLc[k], -2.5f); });
+  }
+
   check<complex<float>, float, complex<float> >("cartToPol(complex)",
     TOL_TRIG, Zc, nullF,
     [](const complex<float>* a, const float*, int n, complex<float>* o)
@@ -4092,6 +4504,42 @@ int main(int argc, char** argv)
         { EVM::polToCartRad(a, n, o); },
       [&](const complex<float> v, int part){ return polWant(v, part, false); },
       polSize, false);
+    // the split overloads get the same grid, split into magnitudes and
+    // phases first (so the in-place run only covers the complex ones), and
+    // the scaled ones a scale of -1.25, the phase times the scale rounded
+    // to float first as in the kernels
+    auto split = [](const complex<float>* a, const int n,
+                    std::vector<float>& m, std::vector<float>& p)
+    {
+      m.resize(n); p.resize(n);
+      for(int k=0; k<n; ++k) { m[k] = a[k].real(); p[k] = a[k].imag(); }
+    };
+    auto scWant = [&](const complex<float> v, const int part)
+    {
+      volatile float p = -1.25f*v.imag();
+      return polWant(complex<float>(v.real(), p), part, true);
+    };
+    checkPolarSpecial("polToCart(mag, phase) special values", mag, nm, ph,
+      np, [&](const complex<float>* a, int n, complex<float>* o)
+        { std::vector<float> m, p; split(a, n, m, p);
+          EVM::polToCart(m.data(), p.data(), n, o); },
+      [&](const complex<float> v, int part){ return polWant(v, part, true); },
+      polSize, false);
+    checkPolarSpecial("polToCartRad(mag, phase) special", mag, nm, ph, np,
+      [&](const complex<float>* a, int n, complex<float>* o)
+        { std::vector<float> m, p; split(a, n, m, p);
+          EVM::polToCartRad(m.data(), p.data(), n, o); },
+      [&](const complex<float> v, int part){ return polWant(v, part, false); },
+      polSize, false);
+    checkPolarSpecial("polToCarts(complex) special values", mag, nm, ph, np,
+      [](const complex<float>* a, int n, complex<float>* o)
+        { EVM::polToCarts(a, n, -1.25f, o); },
+      scWant, polSize, false);
+    checkPolarSpecial("polToCarts(mag, phase) special", mag, nm, ph, np,
+      [&](const complex<float>* a, int n, complex<float>* o)
+        { std::vector<float> m, p; split(a, n, m, p);
+          EVM::polToCarts(m.data(), p.data(), n, -1.25f, o); },
+      scWant, polSize, false);
     checkPolarSpecial("cartToPol special values", cart, nc, cart, nc,
       [](const complex<float>* a, int n, complex<float>* o)
         { EVM::cartToPol(a, n, o); },
